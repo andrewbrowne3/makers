@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>MakersGarments — Gallery</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 1400px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { margin-bottom: .25rem; }
+  .sub { color: #888; font-size: .9rem; margin-bottom: 1.25rem; }
+  nav { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1.5rem; padding: 1rem; background: #8881; border-radius: 8px; }
+  nav a { padding: .35rem .75rem; border-radius: 999px; background: #fff1; text-decoration: none; color: inherit; font-size: .9rem; border: 1px solid #6663; cursor: pointer; }
+  nav a.active, nav a:hover { background: #0a84ff; color: #fff; border-color: #0a84ff; }
+  .section { margin-top: 2rem; }
+  .section h2 { border-bottom: 1px solid #6663; padding-bottom: .5rem; margin-bottom: 1rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
+  .card { border: 1px solid #6663; border-radius: 8px; padding: .5rem; }
+  .card img { width: 100%; aspect-ratio: 1; object-fit: contain; border-radius: 4px; background: #eee3; cursor: zoom-in; }
+  .meta { font-size: .82rem; color: #888; display: flex; justify-content: space-between; margin-top: .4rem; align-items: center; }
+  .badge { padding: 2px 8px; border-radius: 999px; font-weight: 600; font-size: .78rem; }
+  .good { background: #28a74522; color: #28a745; } .meh { background: #ff950022; color: #ff9500; } .bad { background: #dc354522; color: #dc3545; } .muted { background: #8884; color: #666; }
+  .note { font-size: .78rem; color: #aaa; margin-top: .35rem; line-height: 1.35; max-height: 3.4em; overflow: hidden; }
+  .empty { color: #888; font-style: italic; padding: .5rem 0; }
+  .logo-row { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .logo-row .card { width: 140px; }
+  .status { color: #888; font-size: .85rem; }
+  .modal { position: fixed; inset: 0; background: #000c; display: none; align-items: center; justify-content: center; padding: 2rem; z-index: 100; }
+  .modal.open { display: flex; }
+  .modal img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+  .modal .close { position: absolute; top: 1rem; right: 1rem; color: #fff; font-size: 2rem; cursor: pointer; background: none; border: 0; }
+</style>
+</head>
+<body>
+
+<h1>Gallery</h1>
+<p class="sub">All stored designs, logos, and baselines. Zero generation cost — just browsing. <a href="/">← back to generator</a></p>
+
+<nav id="clients"></nav>
+<div id="body"><p class="status">loading…</p></div>
+
+<div class="modal" id="modal"><button class="close" onclick="closeModal()">×</button><img id="modalImg" alt=""></div>
+
+<script>
+function scoreClass(s) {
+  if (s == null) return 'muted';
+  if (s >= 0.7) return 'good';
+  if (s >= 0.4) return 'meh';
+  return 'bad';
+}
+
+function openModal(src) {
+  document.getElementById('modalImg').src = src;
+  document.getElementById('modal').classList.add('open');
+}
+function closeModal() {
+  document.getElementById('modal').classList.remove('open');
+}
+
+async function loadClients() {
+  const r = await fetch('/clients');
+  const j = await r.json();
+  const nav = document.getElementById('clients');
+  if (!j.clients.length) {
+    document.getElementById('body').innerHTML = '<p class="empty">No clients in the DB yet. Run <code>python -m scripts.ingest_training_data</code> then generate something from <a href="/">the main page</a>.</p>';
+    return;
+  }
+  j.clients.forEach(c => {
+    const a = document.createElement('a');
+    a.textContent = c.name;
+    a.onclick = (e) => { e.preventDefault(); showClient(c.name, a); };
+    nav.appendChild(a);
+  });
+  // auto-load the first client that has AI designs
+  showClient(j.clients[0].name, nav.firstChild);
+}
+
+async function showClient(name, linkEl) {
+  document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+  if (linkEl) linkEl.classList.add('active');
+  const body = document.getElementById('body');
+  body.innerHTML = '<p class="status">loading ' + name + '…</p>';
+
+  const [logos, designs, baselines] = await Promise.all([
+    fetch(`/clients/${encodeURIComponent(name)}/logos`).then(r => r.json()),
+    fetch(`/clients/${encodeURIComponent(name)}/designs`).then(r => r.json()),
+    fetch(`/clients/${encodeURIComponent(name)}/baselines`).then(r => r.json()),
+  ]);
+
+  let html = `<div class="section"><h2>${name}</h2></div>`;
+
+  // Logos
+  html += `<div class="section"><h2>Logos (${logos.logos.length})</h2>`;
+  if (!logos.logos.length) {
+    html += `<p class="empty">No logos tracked.</p>`;
+  } else {
+    html += `<div class="logo-row">`;
+    logos.logos.forEach(l => {
+      html += `<div class="card"><img src="${l.url}" onclick="openModal('${l.url}')" alt="${l.filename}"><div class="meta"><span>${l.filename}</span></div></div>`;
+    });
+    html += `</div>`;
+  }
+  html += `</div>`;
+
+  // AI-generated designs
+  const ai = designs.designs.filter(d => d.source === 'ai_generated');
+  html += `<div class="section"><h2>AI renders (${ai.length})</h2>`;
+  if (!ai.length) {
+    html += `<p class="empty">No AI renders yet for this client.</p>`;
+  } else {
+    html += `<div class="grid">`;
+    ai.forEach(d => {
+      const cls = scoreClass(d.evaluator_score);
+      const score = d.evaluator_score != null ? d.evaluator_score.toFixed(2) : '—';
+      const src = d.image_url || '';
+      html += `<div class="card">
+        ${src ? `<img src="${src}" onclick="openModal('${src}')" alt="mockup">` : '<div style="aspect-ratio:1;background:#dc354522;color:#dc3545;display:flex;align-items:center;justify-content:center;border-radius:4px;">no image</div>'}
+        <div class="meta">
+          <span>mock#${d.mockup_index ?? '?'} v${d.version}</span>
+          <span class="badge ${cls}">${score}</span>
+        </div>
+        ${d.evaluator_notes ? `<div class="note">${d.evaluator_notes}</div>` : ''}
+      </div>`;
+    });
+    html += `</div>`;
+  }
+  html += `</div>`;
+
+  // Baselines (human designer)
+  html += `<div class="section"><h2>Human baseline designs (${baselines.baselines.length})</h2>`;
+  if (!baselines.baselines.length) {
+    html += `<p class="empty">No baseline outputs stored for this client.</p>`;
+  } else {
+    html += `<div class="grid">`;
+    baselines.baselines.forEach(b => {
+      html += `<div class="card">
+        <img src="${b.url}" onclick="openModal('${b.url}')" alt="baseline">
+        <div class="meta"><span>baseline v${b.version}</span><span class="badge muted">human</span></div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+  html += `</div>`;
+
+  body.innerHTML = html;
+}
+
+loadClients();
+document.getElementById('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+</script>
+</body>
+</html>

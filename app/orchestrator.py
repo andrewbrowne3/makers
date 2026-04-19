@@ -13,6 +13,7 @@ from app.agents.evaluator_agent import build_evaluator
 from app.agents.question_agent import build_question_agent
 from app.assets import list_mockups
 from app.config import CFG
+from app.db import record_design, sha256_file, upsert_client, upsert_logo
 from app.logging_config import get_logger
 from app.router import RouteDecision, get_router
 from app.schemas import GenerateRequest, GenerateResponse, MockupResult
@@ -54,6 +55,23 @@ def _resolve_mockup_indices(req: GenerateRequest) -> list[int]:
     return [m.index for m in list_mockups()]
 
 
+def _register_logo(client_id: int, req: GenerateRequest) -> Optional[int]:
+    """Register the logo being used. Returns the logo row id, or None if no local file."""
+    from pathlib import Path as _P
+
+    if req.logo_path:
+        p = _P(req.logo_path)
+        if not p.exists():
+            return None
+        sha = sha256_file(p)
+        return upsert_logo(client_id=client_id, filename=p.name, sha256=sha, storage_path=str(p))
+    if req.logo_url:
+        # we don't download-to-register here; the workflow already fetches.
+        # callers who want full tracking should set logo_path.
+        return None
+    return None
+
+
 def handle_generate(req: GenerateRequest) -> GenerateResponse:
     query = _build_query(req)
 
@@ -71,6 +89,8 @@ def handle_generate(req: GenerateRequest) -> GenerateResponse:
     if decision.branch == "image_gen":
         indices = _resolve_mockup_indices(req)
         log.info("🧵 image_gen indices=%s", indices)
+        client_id = upsert_client(req.client_name)
+        logo_id = _register_logo(client_id, req)
         results: list[MockupResult] = []
         per_mockup: list[dict] = []
 
@@ -87,6 +107,17 @@ def handle_generate(req: GenerateRequest) -> GenerateResponse:
                 url = workflow_out["image_url"]
                 brief = f"client={req.client_name} mockup={idx} prompt={workflow_out['prompt']}"
                 score, ev_data = _run_evaluator(url, brief=brief)
+
+                record_design(
+                    client_id=client_id,
+                    logo_id=logo_id,
+                    mockup_index=idx,
+                    s3_key=workflow_out["s3_key"],
+                    prompt=workflow_out["prompt"],
+                    provider=workflow_out["provider"],
+                    evaluator=ev_data or None,
+                    source="ai_generated",
+                )
 
                 results.append(
                     MockupResult(
@@ -109,6 +140,8 @@ def handle_generate(req: GenerateRequest) -> GenerateResponse:
                 per_mockup.append({"mockup_index": idx, "error": str(e)})
 
         details["mockups"] = per_mockup
+        details["client_id"] = client_id
+        details["logo_id"] = logo_id
         return GenerateResponse(
             status="ok",
             branch=decision.branch,
