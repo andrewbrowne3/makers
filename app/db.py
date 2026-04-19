@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS designs (
     evaluator_json   TEXT,
     source           TEXT NOT NULL DEFAULT 'ai_generated',
     version          INTEGER NOT NULL DEFAULT 1,
+    retry_of         INTEGER REFERENCES designs(id) ON DELETE SET NULL,
+    attempts         INTEGER NOT NULL DEFAULT 1,
     created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -178,6 +180,8 @@ def record_design(
     provider: Optional[str] = None,
     evaluator: Optional[dict[str, Any]] = None,
     source: str = "ai_generated",
+    retry_of: Optional[int] = None,
+    attempts: int = 1,
 ) -> int:
     ev_score = None
     ev_notes = None
@@ -192,20 +196,32 @@ def record_design(
         ev_json = json.dumps(evaluator, ensure_ascii=False)
 
     with connect() as con:
+        # Ensure the new columns exist on databases that were created before the migration
+        try:
+            con.execute("ALTER TABLE designs ADD COLUMN retry_of INTEGER REFERENCES designs(id) ON DELETE SET NULL")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            con.execute("ALTER TABLE designs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1")
+        except sqlite3.OperationalError:
+            pass
+
         version = _next_version(con, logo_id, mockup_index)
         cur = con.execute(
             """
             INSERT INTO designs
                 (logo_id, client_id, mockup_index, s3_key, local_path, prompt,
-                 provider, evaluator_score, evaluator_notes, evaluator_json, source, version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 provider, evaluator_score, evaluator_notes, evaluator_json,
+                 source, version, retry_of, attempts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (logo_id, client_id, mockup_index, s3_key, local_path, prompt,
-             provider, ev_score, ev_notes, ev_json, source, version),
+             provider, ev_score, ev_notes, ev_json, source, version,
+             retry_of, attempts),
         )
         design_id = int(cur.lastrowid)
-        log.info("💾 design recorded id=%d client=%s logo=%s mock=%s v=%d source=%s",
-                 design_id, client_id, logo_id, mockup_index, version, source)
+        log.info("💾 design recorded id=%d client=%s logo=%s mock=%s v=%d source=%s attempts=%d",
+                 design_id, client_id, logo_id, mockup_index, version, source, attempts)
         return design_id
 
 

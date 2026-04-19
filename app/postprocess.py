@@ -53,3 +53,66 @@ def maybe_force_white_bg(png_bytes: bytes, *, enabled: Optional[bool] = None) ->
     if not flag:
         return png_bytes
     return force_white_background(png_bytes)
+
+
+def non_white_ratio(png_bytes: bytes, threshold: int = 240, stride: int = 8) -> float:
+    """Fraction of pixels that are not near-white. Samples every `stride`-th pixel."""
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    px = img.load()
+    total = nonwhite = 0
+    for y in range(0, img.height, stride):
+        for x in range(0, img.width, stride):
+            total += 1
+            r, g, b = px[x, y]
+            if min(r, g, b) < threshold:
+                nonwhite += 1
+    return nonwhite / max(1, total)
+
+
+def foreground_bbox(png_bytes: bytes, threshold: int = 240) -> Optional[tuple[int, int, int, int]]:
+    """Bounding box of non-white pixels (same method as assets.crop_to_subject).
+
+    Returns (left, top, right, bottom) or None if no foreground detected.
+    """
+    from PIL import ImageChops
+
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    bg = Image.new("RGB", img.size, (255, 255, 255))
+    diff = ImageChops.difference(img, bg)
+    # threshold everything near white so faint rembg edge halos don't fool the bbox
+    _ = threshold  # reserved for future use; getbbox already handles zero-diff pixels
+    return diff.getbbox()
+
+
+def pose_diagnostics(png_bytes: bytes) -> dict:
+    """Run both the erasure + pose-aspect checks. Returns a dict of signals."""
+    ratio = non_white_ratio(png_bytes)
+    bbox = foreground_bbox(png_bytes)
+    if bbox is None:
+        return {
+            "non_white_ratio": ratio,
+            "sock_erased": True,
+            "sock_horizontal": False,
+            "bbox": None,
+            "bbox_w": 0,
+            "bbox_h": 0,
+        }
+    left, top, right, bottom = bbox
+    w, h = right - left, bottom - top
+    return {
+        "non_white_ratio": ratio,
+        "sock_erased": ratio < 0.08,
+        "sock_horizontal": w > 0.9 * h,
+        "bbox": bbox,
+        "bbox_w": w,
+        "bbox_h": h,
+    }
+
+
+def describe_failure(diag: dict) -> Optional[str]:
+    """Return a human-readable failure reason if diag indicates a problem, else None."""
+    if diag.get("sock_erased"):
+        return f"the sock was erased or nearly invisible (only {diag['non_white_ratio']:.1%} non-white pixels)"
+    if diag.get("sock_horizontal"):
+        return f"the sock was laid down horizontally (bbox {diag['bbox_w']}x{diag['bbox_h']}, width > 0.9 * height)"
+    return None

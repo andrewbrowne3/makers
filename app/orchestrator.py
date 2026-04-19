@@ -117,6 +117,7 @@ def handle_generate(req: GenerateRequest) -> GenerateResponse:
                     provider=workflow_out["provider"],
                     evaluator=ev_data or None,
                     source="ai_generated",
+                    attempts=int(workflow_out.get("attempts", 1)),
                 )
 
                 results.append(

@@ -20,8 +20,11 @@ RUBRIC = """Score each criterion from 0.0 to 1.0 then return JSON:
   placement_correct: the logo is in the expected garment region
   color_palette: the brand colors are faithfully rendered
   no_distortion: no warping, artifacts, or weird textures
+  pose_vertical: the sock stands upright with the cuff at the top and the toe pointing sideways — NOT tilted, rotated, or laid on its side (0.0 if tilted/horizontal, 1.0 if perfectly upright)
+  sock_visible: a recognizable, full-size sock occupies the majority of the image — NOT erased, missing, tiny, or cropped (0.0 if the sock is missing or nearly invisible, 1.0 if it fills the frame well)
+overall: the average of all six criteria above.
 Return exactly this JSON schema:
-  {"logo_readable": 0.0, "placement_correct": 0.0, "color_palette": 0.0, "no_distortion": 0.0, "overall": 0.0, "notes": "..."}
+  {"logo_readable": 0.0, "placement_correct": 0.0, "color_palette": 0.0, "no_distortion": 0.0, "pose_vertical": 0.0, "sock_visible": 0.0, "overall": 0.0, "notes": "..."}
 """
 
 
