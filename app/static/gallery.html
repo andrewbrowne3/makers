@@ -28,12 +28,23 @@
   .modal.open { display: flex; }
   .modal img { max-width: 100%; max-height: 100%; border-radius: 8px; }
   .modal .close { position: absolute; top: 1rem; right: 1rem; color: #fff; font-size: 2rem; cursor: pointer; background: none; border: 0; }
+  .tab { padding: .5rem 1rem; border: 1px solid #6663; border-radius: 6px; background: transparent; color: inherit; font-weight: 600; cursor: pointer; }
+  .tab.active { background: #0a84ff; color: #fff; border-color: #0a84ff; }
+  .run-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr; gap: .75rem; padding: .6rem .75rem; border-bottom: 1px solid #8883; align-items: center; }
+  .run-row.header { font-weight: 700; background: #8881; border-radius: 6px 6px 0 0; }
+  .run-row:hover:not(.header) { background: #0a84ff11; cursor: pointer; }
+  .run-row .label { font-weight: 600; }
 </style>
 </head>
 <body>
 
 <h1>Gallery</h1>
 <p class="sub">All stored designs, logos, and baselines. Zero generation cost — just browsing. <a href="/">← back to generator</a></p>
+
+<div style="display:flex;gap:1rem;margin-bottom:1rem;">
+  <button id="view-clients" class="tab active">By client</button>
+  <button id="view-runs"    class="tab">By run</button>
+</div>
 
 <nav id="clients"></nav>
 <div id="body"><p class="status">loading…</p></div>
@@ -143,6 +154,77 @@ async function showClient(name, linkEl) {
 
   body.innerHTML = html;
 }
+
+async function loadRuns() {
+  document.getElementById('clients').innerHTML = '';
+  const body = document.getElementById('body');
+  body.innerHTML = '<p class="status">loading runs…</p>';
+  const r = await fetch('/runs');
+  const j = await r.json();
+  if (!j.runs.length) {
+    body.innerHTML = '<p class="empty">No runs yet. Generate something from <a href="/">the main page</a>.</p>';
+    return;
+  }
+  let html = `<div class="section"><h2>All runs (${j.runs.length})</h2>`;
+  html += `<div class="run-row header">
+    <div>Label</div><div>Client</div><div>Kind</div><div>Renders</div><div>Avg score</div><div>Cost</div>
+  </div>`;
+  j.runs.forEach(run => {
+    const avg = run.avg_score != null ? run.avg_score.toFixed(3) : '—';
+    const avgCls = scoreClass(run.avg_score);
+    html += `<div class="run-row" onclick="showRun(${run.id})">
+      <div class="label">${run.label || '(unlabeled)'}<div style="font-size:.75rem;color:#888;">${run.created_at}</div></div>
+      <div>${run.client_name || '—'}</div>
+      <div>${run.kind}</div>
+      <div>${run.n_renders}${run.n_retries ? ` (+${run.n_retries} retry)` : ''}</div>
+      <div><span class="badge ${avgCls}">${avg}</span></div>
+      <div>$${(run.total_cost_usd || 0).toFixed(3)}</div>
+    </div>`;
+  });
+  html += `</div>`;
+  body.innerHTML = html;
+}
+
+async function showRun(runId) {
+  const body = document.getElementById('body');
+  body.innerHTML = '<p class="status">loading run…</p>';
+  const j = await fetch(`/runs/${runId}`).then(r => r.json());
+  const run = j.run;
+  let html = `<div class="section"><a href="#" onclick="loadRuns();return false;">← all runs</a>
+    <h2>${run.label || '(unlabeled)'} <span style="font-weight:400;font-size:.9rem;color:#888;">#${run.id}</span></h2>
+    <p style="color:#888;">${run.created_at} → ${run.completed_at || 'running'} ·
+      kind=${run.kind} · renders=${run.n_renders}${run.n_retries ? ` (+${run.n_retries} retry)` : ''} ·
+      avg=<span class="badge ${scoreClass(run.avg_score)}">${run.avg_score != null ? run.avg_score.toFixed(3) : '—'}</span> ·
+      cost=$${(run.total_cost_usd || 0).toFixed(3)}</p>
+  </div>`;
+  html += `<div class="grid">`;
+  j.designs.forEach(d => {
+    const cls = scoreClass(d.evaluator_score);
+    const score = d.evaluator_score != null ? d.evaluator_score.toFixed(2) : '—';
+    const src = d.image_url || '';
+    html += `<div class="card">
+      ${src ? `<img src="${src}" onclick="openModal('${src}')" alt="mockup">` : '<div style="aspect-ratio:1;background:#dc354522;color:#dc3545;display:flex;align-items:center;justify-content:center;border-radius:4px;">no image</div>'}
+      <div class="meta">
+        <span>mock#${d.mockup_index ?? '?'} v${d.version}${d.attempts > 1 ? ` · ${d.attempts} tries` : ''}</span>
+        <span class="badge ${cls}">${score}</span>
+      </div>
+      ${d.evaluator_notes ? `<div class="note">${d.evaluator_notes}</div>` : ''}
+    </div>`;
+  });
+  html += `</div>`;
+  body.innerHTML = html;
+}
+
+document.getElementById('view-clients').onclick = () => {
+  document.getElementById('view-clients').classList.add('active');
+  document.getElementById('view-runs').classList.remove('active');
+  loadClients();
+};
+document.getElementById('view-runs').onclick = () => {
+  document.getElementById('view-runs').classList.add('active');
+  document.getElementById('view-clients').classList.remove('active');
+  loadRuns();
+};
 
 loadClients();
 document.getElementById('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });

@@ -12,9 +12,12 @@ from app.config import CFG, PROJECT_ROOT
 from app.db import (
     connect,
     get_client_by_name,
+    get_run,
     list_clients,
     list_designs,
+    list_designs_for_run,
     list_logos_for_client,
+    list_runs,
 )
 from app.logging_config import get_logger, setup_logging
 from app.orchestrator import handle_generate
@@ -87,6 +90,33 @@ def generate(req: GenerateRequest) -> GenerateResponse:
 def rebuild_router() -> dict:
     n = get_router().rebuild()
     return {"status": "ok", "seeded": n}
+
+
+# ── Runs ───────────────────────────────────────────────────────────────
+@app.get("/runs")
+def get_runs(limit: int = 100) -> dict:
+    return {"runs": list_runs(limit=limit)}
+
+
+@app.get("/runs/{run_id}")
+def get_run_detail(run_id: int) -> dict:
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    designs = list_designs_for_run(run_id)
+    s3 = get_s3()
+    for d in designs:
+        if d.get("s3_key") and d.get("source") == "ai_generated":
+            try:
+                d["image_url"] = s3.presigned_download(d["s3_key"])
+            except Exception as e:  # noqa: BLE001
+                d["image_url"] = None
+                d["url_error"] = str(e)
+        elif d.get("local_path") and d.get("source") == "baseline":
+            d["image_url"] = f"/baselines/{d['id']}"
+        else:
+            d["image_url"] = None
+    return {"run": run, "designs": designs}
 
 
 # ── History / catalog endpoints ────────────────────────────────────────

@@ -66,6 +66,23 @@ CREATE TABLE IF NOT EXISTS designs (
 CREATE INDEX IF NOT EXISTS idx_designs_client ON designs(client_id);
 CREATE INDEX IF NOT EXISTS idx_designs_logo   ON designs(logo_id);
 CREATE INDEX IF NOT EXISTS idx_designs_key    ON designs(s3_key);
+
+CREATE TABLE IF NOT EXISTS runs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    label          TEXT,
+    kind           TEXT NOT NULL DEFAULT 'adhoc',
+    client_id      INTEGER REFERENCES clients(id) ON DELETE SET NULL,
+    request_json   TEXT,
+    status         TEXT NOT NULL DEFAULT 'running',
+    n_renders      INTEGER NOT NULL DEFAULT 0,
+    n_retries      INTEGER NOT NULL DEFAULT 0,
+    total_cost_usd REAL NOT NULL DEFAULT 0,
+    avg_score      REAL,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_runs_created ON runs(created_at DESC);
 """
 
 
@@ -182,6 +199,7 @@ def record_design(
     source: str = "ai_generated",
     retry_of: Optional[int] = None,
     attempts: int = 1,
+    run_id: Optional[int] = None,
 ) -> int:
     ev_score = None
     ev_notes = None
@@ -197,14 +215,15 @@ def record_design(
 
     with connect() as con:
         # Ensure the new columns exist on databases that were created before the migration
-        try:
-            con.execute("ALTER TABLE designs ADD COLUMN retry_of INTEGER REFERENCES designs(id) ON DELETE SET NULL")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            con.execute("ALTER TABLE designs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1")
-        except sqlite3.OperationalError:
-            pass
+        for stmt in (
+            "ALTER TABLE designs ADD COLUMN retry_of INTEGER REFERENCES designs(id) ON DELETE SET NULL",
+            "ALTER TABLE designs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE designs ADD COLUMN run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL",
+        ):
+            try:
+                con.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
 
         version = _next_version(con, logo_id, mockup_index)
         cur = con.execute(
@@ -212,17 +231,101 @@ def record_design(
             INSERT INTO designs
                 (logo_id, client_id, mockup_index, s3_key, local_path, prompt,
                  provider, evaluator_score, evaluator_notes, evaluator_json,
-                 source, version, retry_of, attempts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 source, version, retry_of, attempts, run_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (logo_id, client_id, mockup_index, s3_key, local_path, prompt,
              provider, ev_score, ev_notes, ev_json, source, version,
-             retry_of, attempts),
+             retry_of, attempts, run_id),
         )
         design_id = int(cur.lastrowid)
-        log.info("💾 design recorded id=%d client=%s logo=%s mock=%s v=%d source=%s attempts=%d",
-                 design_id, client_id, logo_id, mockup_index, version, source, attempts)
+        log.info("💾 design recorded id=%d run=%s client=%s mock=%s v=%d source=%s attempts=%d",
+                 design_id, run_id, client_id, mockup_index, version, source, attempts)
         return design_id
+
+
+# ── Runs ──────────────────────────────────────────────────────────────
+
+COST_PER_RENDER_USD = 0.039  # Nano Banana Pro @ 1024
+
+
+def create_run(
+    *,
+    label: Optional[str] = None,
+    kind: str = "adhoc",
+    client_id: Optional[int] = None,
+    request_json: Optional[str] = None,
+) -> int:
+    with connect() as con:
+        cur = con.execute(
+            "INSERT INTO runs (label, kind, client_id, request_json) VALUES (?, ?, ?, ?)",
+            (label, kind, client_id, request_json),
+        )
+        run_id = int(cur.lastrowid)
+    log.info("🏃 run created id=%d kind=%s label=%s client=%s", run_id, kind, label, client_id)
+    return run_id
+
+
+def finalize_run(run_id: int, *, status: str = "completed") -> None:
+    with connect() as con:
+        stats = con.execute(
+            """
+            SELECT COUNT(*) AS n,
+                   COALESCE(SUM(attempts), 0) AS attempts,
+                   AVG(evaluator_score) AS avg_score
+            FROM designs
+            WHERE run_id = ? AND source = 'ai_generated'
+            """,
+            (run_id,),
+        ).fetchone()
+        n = int(stats["n"] or 0)
+        attempts_total = int(stats["attempts"] or 0)
+        avg_score = float(stats["avg_score"]) if stats["avg_score"] is not None else None
+        cost = round(attempts_total * COST_PER_RENDER_USD, 4)
+        n_retries = max(0, attempts_total - n)
+        con.execute(
+            """
+            UPDATE runs
+               SET status = ?, n_renders = ?, n_retries = ?,
+                   total_cost_usd = ?, avg_score = ?,
+                   completed_at = datetime('now')
+             WHERE id = ?
+            """,
+            (status, n, n_retries, cost, avg_score, run_id),
+        )
+    log.info("🏁 run finalized id=%d n=%d retries=%d cost=$%.3f avg=%s", run_id, n, n_retries, cost, avg_score)
+
+
+def list_runs(limit: int = 100) -> list[dict]:
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT r.*, c.name AS client_name
+              FROM runs r LEFT JOIN clients c ON c.id = r.client_id
+             ORDER BY r.created_at DESC
+             LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_run(run_id: int) -> Optional[dict]:
+    with connect() as con:
+        row = con.execute(
+            "SELECT r.*, c.name AS client_name FROM runs r LEFT JOIN clients c ON c.id=r.client_id WHERE r.id = ?",
+            (run_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_designs_for_run(run_id: int) -> list[dict]:
+    with connect() as con:
+        rows = con.execute(
+            "SELECT * FROM designs WHERE run_id = ? ORDER BY mockup_index, version",
+            (run_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def list_clients() -> list[dict]:

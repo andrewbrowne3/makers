@@ -23,6 +23,14 @@ class GenerateRequest(BaseModel):
         None,
         description="Override the router — 'image_gen', 'evaluate', 'ask_question'",
     )
+    run_label: Optional[str] = Field(
+        None,
+        description="Human-readable label for this run (e.g. 'Option-C batch', 'ui-adhoc')",
+    )
+    run_kind: Optional[str] = Field(
+        "adhoc",
+        description="Run category: 'adhoc' | 'batch' | 'regression' | 'ui'",
+    )
 
 
 class MockupResult(BaseModel):

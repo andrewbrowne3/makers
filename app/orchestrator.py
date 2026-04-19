@@ -13,7 +13,7 @@ from app.agents.evaluator_agent import build_evaluator
 from app.agents.question_agent import build_question_agent
 from app.assets import list_mockups
 from app.config import CFG
-from app.db import record_design, sha256_file, upsert_client, upsert_logo
+from app.db import create_run, finalize_run, record_design, sha256_file, upsert_client, upsert_logo
 from app.logging_config import get_logger
 from app.router import RouteDecision, get_router
 from app.schemas import GenerateRequest, GenerateResponse, MockupResult
@@ -91,6 +91,14 @@ def handle_generate(req: GenerateRequest) -> GenerateResponse:
         log.info("🧵 image_gen indices=%s", indices)
         client_id = upsert_client(req.client_name)
         logo_id = _register_logo(client_id, req)
+        import json as _json
+        run_id = create_run(
+            label=req.run_label or f"{req.client_name} × {len(indices)} mock(s)",
+            kind=req.run_kind or "adhoc",
+            client_id=client_id,
+            request_json=_json.dumps(req.model_dump(), ensure_ascii=False),
+        )
+        details["run_id"] = run_id
         results: list[MockupResult] = []
         per_mockup: list[dict] = []
 
@@ -118,6 +126,7 @@ def handle_generate(req: GenerateRequest) -> GenerateResponse:
                     evaluator=ev_data or None,
                     source="ai_generated",
                     attempts=int(workflow_out.get("attempts", 1)),
+                    run_id=run_id,
                 )
 
                 results.append(
@@ -143,6 +152,7 @@ def handle_generate(req: GenerateRequest) -> GenerateResponse:
         details["mockups"] = per_mockup
         details["client_id"] = client_id
         details["logo_id"] = logo_id
+        finalize_run(run_id)
         return GenerateResponse(
             status="ok",
             branch=decision.branch,

@@ -53,6 +53,8 @@ def main() -> int:
             colors=[],
             notes=None,
             force_branch="image_gen",
+            run_label=f"regression-9 · {client} × {len(mockups)}",
+            run_kind="regression",
         )
         resp = handle_generate(req)
         for r in resp.results:
