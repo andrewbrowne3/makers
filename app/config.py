@@ -51,6 +51,8 @@ class LLMConfig:
 class ImageGenConfig:
     provider: ImageGenProvider = _get("IMAGE_GEN_PROVIDER", "nano_banana")  # type: ignore[assignment]
     model: str = _get("IMAGE_GEN_MODEL", "gemini-2.5-flash-image")
+    force_white_bg: bool = _get_bool("FORCE_WHITE_BG", True)
+    rembg_model: str = _get("REMBG_MODEL", "u2net")
 
 
 @dataclass(frozen=True)

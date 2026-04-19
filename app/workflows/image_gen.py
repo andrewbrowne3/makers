@@ -17,8 +17,9 @@ from typing import Optional
 
 import httpx
 
-from app.assets import get_mockup
+from app.assets import crop_to_subject, get_mockup
 from app.logging_config import get_logger
+from app.postprocess import maybe_force_white_bg
 from app.providers.image_gen import get_image_gen
 from app.s3 import get_s3
 
@@ -27,7 +28,11 @@ log = get_logger("workflow.image_gen")
 DEFAULT_PROMPT = (
     "Replace the 'LogoHere' placeholder on this 3D sock mockup with the attached client logo. "
     "Preserve the knit fabric texture, 3D shading, sock ribbing, and original sock colors. "
-    "Blend the logo so it looks woven or printed into the sock — not pasted flat on top."
+    "Blend the logo so it looks woven or printed into the sock — not pasted flat on top. "
+    "Output a single sock floating alone against a pure solid white (#FFFFFF) background. "
+    "Do NOT add any of the following: display stand, sock form, mannequin, hanger, hook, "
+    "wire frame, armature, box, pedestal, shadow, reflection, gradient, or studio floor. "
+    "Nothing but the sock itself should be visible."
 )
 
 
@@ -67,22 +72,27 @@ def generate_one_mockup(
     mockup_index: int,
     colors: Optional[list[str]] = None,
     notes: Optional[str] = None,
+    pre_crop: bool = True,
 ) -> dict:
     """Execute the workflow for one mockup. Returns dict with image_url + debug info."""
     colors = colors or []
-    log.info("🧵 workflow start client=%s mock=%d", client_name, mockup_index)
+    log.info("🧵 workflow start client=%s mock=%d pre_crop=%s", client_name, mockup_index, pre_crop)
 
     logo_bytes = _load_logo(logo_path=logo_path, logo_url=logo_url)
 
     mock = get_mockup(mockup_index)
     mock_bytes = mock.path.read_bytes()
     log.info("🧵 mockup loaded index=%d file=%s bytes=%d", mock.index, mock.path.name, len(mock_bytes))
+    if pre_crop:
+        mock_bytes = crop_to_subject(mock_bytes)
 
     prompt = _build_prompt(client_name, notes, colors)
 
     provider = get_image_gen()
     png = provider.generate(prompt, reference_images=[logo_bytes, mock_bytes])
     log.info("🧵 image generated provider=%s bytes=%d", provider.name, len(png))
+
+    png = maybe_force_white_bg(png)
 
     s3 = get_s3()
     filename = f"{_slug(client_name)}_mock{mockup_index}.png"

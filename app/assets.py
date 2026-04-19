@@ -5,9 +5,12 @@ can reference them without hard-coding paths.
 """
 from __future__ import annotations
 
+import io
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from PIL import Image, ImageChops
 
 from app.config import CFG
 from app.logging_config import get_logger
@@ -49,6 +52,40 @@ def get_mockup(index: int) -> Mockup:
     if index not in mocks:
         raise KeyError(f"mockup {index} not found (available: {sorted(mocks)})")
     return mocks[index]
+
+
+def crop_to_subject(png_bytes: bytes, padding_pct: float = 0.08) -> bytes:
+    """Crop a mockup image to the tight bounding box of its subject (non-background pixels).
+
+    Uses the top-left corner pixel as the reference background color. Pure Pillow,
+    deterministic, no ML. Returns the original bytes if no subject is detected.
+    """
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    bg_color = img.getpixel((0, 0))
+    bg = Image.new("RGB", img.size, bg_color)
+    diff = ImageChops.difference(img, bg)
+    bbox = diff.getbbox()
+    if not bbox:
+        log.info("✂️  crop_to_subject: no subject detected, returning original")
+        return png_bytes
+
+    w, h = img.size
+    left, top, right, bottom = bbox
+    pad_x = int((right - left) * padding_pct)
+    pad_y = int((bottom - top) * padding_pct)
+    left = max(0, left - pad_x)
+    top = max(0, top - pad_y)
+    right = min(w, right + pad_x)
+    bottom = min(h, bottom + pad_y)
+
+    cropped = img.crop((left, top, right, bottom))
+    out = io.BytesIO()
+    cropped.save(out, format="PNG")
+    log.info(
+        "✂️  crop_to_subject orig=%dx%d → %dx%d (bg=%s)",
+        w, h, cropped.width, cropped.height, bg_color,
+    )
+    return out.getvalue()
 
 
 def list_training_pairs() -> list[TrainingPair]:

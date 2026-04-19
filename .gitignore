@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 venv/
 db/chroma_db/
+db/app.db
 logs/
 uploads/
 *.log

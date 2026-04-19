@@ -10,3 +10,6 @@ chromadb>=0.5
 anthropic>=0.39
 openai>=1.54
 google-genai>=0.3
+rembg>=2.0
+onnxruntime>=1.17
+python-multipart>=0.0.9
