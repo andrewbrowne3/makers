@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>MakersGarments — Logo → Design</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { margin-bottom: .25rem; }
+  .hint { color: #888; font-size: .9rem; margin-bottom: 1.25rem; }
+  form { display: grid; gap: .75rem; padding: 1rem; border: 1px solid #6663; border-radius: 8px; }
+  label { display: grid; gap: .25rem; font-weight: 600; }
+  input[type=text], input[type=file], textarea { padding: .5rem; font-size: 1rem; border: 1px solid #6663; border-radius: 6px; background: #fff1; color: inherit; }
+  .mockups { display: flex; flex-wrap: wrap; gap: .5rem; }
+  .mockups label { flex-direction: row; align-items: center; gap: .35rem; font-weight: 400; cursor: pointer; }
+  button { padding: .6rem 1rem; font-size: 1rem; font-weight: 600; border: 0; border-radius: 6px; background: #0a84ff; color: #fff; cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: progress; }
+  .results { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; margin-top: 1.5rem; }
+  .card { border: 1px solid #6663; border-radius: 8px; padding: .5rem; }
+  .card img { width: 100%; aspect-ratio: 1; object-fit: contain; border-radius: 4px; background: #eee3; }
+  .card .meta { font-size: .8rem; color: #888; display: flex; justify-content: space-between; margin-top: .25rem; }
+  .score { font-weight: 600; }
+  .score.good { color: #28a745; } .score.bad { color: #dc3545; } .score.meh { color: #ff9500; }
+  pre { font-size: .8rem; background: #8881; padding: .5rem; border-radius: 4px; overflow: auto; max-height: 220px; }
+  .status { font-size: .9rem; color: #888; margin-top: .5rem; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+</style>
+</head>
+<body>
+<h1>MakersGarments</h1>
+<p class="hint">Upload a client logo → render Executive Crew Sock mockups.</p>
+
+<form id="gen-form">
+  <div class="row">
+    <label>Client name
+      <input type="text" id="client_name" value="Acme Corp" required>
+    </label>
+    <label>Brand colors (comma-sep)
+      <input type="text" id="colors" placeholder="#0a84ff, #fff">
+    </label>
+  </div>
+  <label>Logo file
+    <input type="file" id="logo_file" accept="image/*">
+  </label>
+  <label>…or logo URL
+    <input type="text" id="logo_url" placeholder="https://…">
+  </label>
+  <fieldset style="border:1px solid #6663;border-radius:6px;padding:.5rem;">
+    <legend>Mockups</legend>
+    <div class="mockups" id="mockups"></div>
+    <div style="margin-top:.5rem; font-size:.85rem;">
+      <a href="#" id="select-all">select all</a> · <a href="#" id="select-none">none</a>
+    </div>
+  </fieldset>
+  <label>Designer notes (optional)
+    <textarea id="notes" rows="2" placeholder="embroidered feel, athletic fit…"></textarea>
+  </label>
+  <button type="submit" id="submit-btn">Generate</button>
+  <div class="status" id="status"></div>
+</form>
+
+<div class="results" id="results"></div>
+<details style="margin-top:1rem;"><summary>Raw response</summary><pre id="raw"></pre></details>
+
+<script>
+const mocksEl = document.getElementById('mockups');
+for (let i = 1; i <= 10; i++) {
+  const id = `mock-${i}`;
+  mocksEl.insertAdjacentHTML('beforeend',
+    `<label><input type="checkbox" name="mockups" value="${i}" id="${id}" ${i <= 3 ? 'checked' : ''}>#${i}</label>`);
+}
+document.getElementById('select-all').onclick = (e) => { e.preventDefault(); document.querySelectorAll('input[name=mockups]').forEach(x => x.checked = true); };
+document.getElementById('select-none').onclick = (e) => { e.preventDefault(); document.querySelectorAll('input[name=mockups]').forEach(x => x.checked = false); };
+
+function scoreClass(s) {
+  if (s == null) return '';
+  if (s >= 0.7) return 'good';
+  if (s >= 0.4) return 'meh';
+  return 'bad';
+}
+
+document.getElementById('gen-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('submit-btn');
+  const status = document.getElementById('status');
+  const results = document.getElementById('results');
+  const raw = document.getElementById('raw');
+  results.innerHTML = '';
+  raw.textContent = '';
+  btn.disabled = true;
+  status.textContent = 'Uploading + generating…';
+
+  const file = document.getElementById('logo_file').files[0];
+  let logo_path = null;
+  let logo_url = document.getElementById('logo_url').value || null;
+  if (file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    const up = await fetch('/upload', { method: 'POST', body: fd });
+    if (!up.ok) { status.textContent = 'Upload failed.'; btn.disabled = false; return; }
+    const j = await up.json();
+    logo_path = j.path;
+    status.textContent = `Logo uploaded (${j.path}). Generating…`;
+  }
+  if (!logo_path && !logo_url) { status.textContent = 'Provide a logo file or URL.'; btn.disabled = false; return; }
+
+  const mockups = [...document.querySelectorAll('input[name=mockups]:checked')].map(x => +x.value);
+  if (!mockups.length) { status.textContent = 'Select at least one mockup.'; btn.disabled = false; return; }
+
+  const body = {
+    client_name: document.getElementById('client_name').value,
+    logo_path, logo_url,
+    garment_type: 'sock',
+    mockups,
+    colors: document.getElementById('colors').value.split(',').map(s => s.trim()).filter(Boolean),
+    notes: document.getElementById('notes').value || null,
+  };
+
+  const t0 = Date.now();
+  const r = await fetch('/generate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const t = ((Date.now() - t0) / 1000).toFixed(1);
+  if (!r.ok) { status.textContent = `HTTP ${r.status}`; btn.disabled = false; return; }
+  const data = await r.json();
+  raw.textContent = JSON.stringify(data, null, 2);
+  status.textContent = `${data.results.length} mockup(s) in ${t}s · route=${data.branch} score=${data.router_score?.toFixed(2)}`;
+
+  for (const res of data.results) {
+    const cls = scoreClass(res.evaluator_score);
+    const html = `
+      <div class="card">
+        ${res.image_url ? `<a href="${res.image_url}" target="_blank"><img src="${res.image_url}" alt="mockup ${res.mockup_index}"></a>` : `<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;color:#dc3545;">error</div>`}
+        <div class="meta">
+          <span>#${res.mockup_index}</span>
+          <span class="score ${cls}">${res.evaluator_score != null ? res.evaluator_score.toFixed(2) : '—'}</span>
+        </div>
+        ${res.error ? `<div style="color:#dc3545;font-size:.8rem;">${res.error}</div>` : ''}
+      </div>`;
+    results.insertAdjacentHTML('beforeend', html);
+  }
+  btn.disabled = false;
+});
+</script>
+</body>
+</html>

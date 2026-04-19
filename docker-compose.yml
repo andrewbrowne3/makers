@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    image: makersgarments-api
+    container_name: makersgarments-api
+    env_file: .env
+    environment:
+      # Ollama runs on the host; rewrite localhost → host.docker.internal
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8012:8000"
+    volumes:
+      - ./db:/app/db
+      - ./logs:/app/logs
+    restart: unless-stopped

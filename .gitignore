@@ -1,0 +1,12 @@
+.env
+.env.local
+*.pyc
+__pycache__/
+.venv/
+venv/
+db/chroma_db/
+logs/
+uploads/
+*.log
+.DS_Store
+service_account*.json
