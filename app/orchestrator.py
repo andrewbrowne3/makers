@@ -128,11 +128,14 @@ def _evaluator_retry_reason(ev_data: dict) -> Optional[str]:
         return None
     pose = ev_data.get("pose_vertical")
     vis = ev_data.get("sock_visible")
+    comp = ev_data.get("composition_pure")
     try:
         if pose is not None and float(pose) < 0.5:
             return f"evaluator flagged the sock as tilted or laid horizontally (pose_vertical={pose})"
         if vis is not None and float(vis) < 0.5:
             return f"evaluator flagged the sock as missing or too small (sock_visible={vis})"
+        if comp is not None and float(comp) < 0.5:
+            return f"evaluator flagged extra graphics or text outside the sock (composition_pure={comp})"
     except (TypeError, ValueError):
         pass
     return None

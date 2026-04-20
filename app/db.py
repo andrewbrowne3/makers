@@ -332,6 +332,24 @@ def get_run(run_id: int) -> Optional[dict]:
         return dict(row) if row else None
 
 
+def list_templates_used_by_client(client_id: int) -> list[dict]:
+    """Distinct mockup_index values that this client's AI renders used, with counts."""
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT mockup_index, COUNT(*) AS render_count
+              FROM designs
+             WHERE client_id = ?
+               AND source = 'ai_generated'
+               AND mockup_index IS NOT NULL
+             GROUP BY mockup_index
+             ORDER BY mockup_index
+            """,
+            (client_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def mark_hero(*, run_id: int, mockup_index: int, s3_key: str) -> None:
     """Set is_hero=1 on the design matching (run_id, mockup_index, s3_key); clear
     the flag on sibling variants of the same mockup within the run."""

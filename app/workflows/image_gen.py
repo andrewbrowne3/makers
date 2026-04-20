@@ -30,12 +30,18 @@ DEFAULT_PROMPT = (
     "Preserve the knit fabric texture, 3D shading, sock ribbing, and original sock colors. "
     "Blend the logo so it looks woven or printed into the sock — not pasted flat on top. "
     "Output a single sock floating alone against a pure solid white (#FFFFFF) background. "
-    "Do NOT add any of the following: display stand, sock form, mannequin, hanger, hook, "
-    "wire frame, armature, box, pedestal, shadow, reflection, gradient, or studio floor. "
-    "Nothing but the sock itself should be visible. "
+    "COMPOSITION RULE — the sock is the ONLY element in the image. Absolutely nothing else "
+    "appears anywhere in the frame: "
+    "   - NO floating or oversized text beside or behind the sock "
+    "   - NO poster layouts, advertising compositions, promotional overlays, or marketing graphics "
+    "   - NO brand wordmarks, typography, slogans, or logos rendered outside the sock's surface "
+    "   - NO additional socks, product variants, or comparison shots "
+    "   - NO display stand, sock form, mannequin, hanger, hook, wire frame, armature, box, pedestal "
+    "   - NO shadow, reflection, gradient, studio floor, or background texture "
+    "Every logo or typography element must live ON the sock fabric itself, never floating in empty space. "
     "POSE LOCK — match the reference mockup's pose exactly: same camera angle, same tilt, "
     "same toe direction, same sock-to-frame proportion. If the reference shows the toe "
-    "pointing right, the output's toe must point right. If the reference fills ~60% of the "
+    "pointing right, the output's toe must point right. If the reference fills ~35% of the "
     "frame, the output must fill the same. Do NOT zoom in, zoom out, rotate, mirror, or "
     "reframe the sock — treat the reference mockup's pose as a rigid constraint. Only the "
     "colors, patterns, and logo content change; orientation and composition stay identical."
@@ -59,10 +65,19 @@ def _pose_hint(profile: dict) -> str:
     return " Reference-specific constraints: " + ", ".join(bits) + "."
 
 RETRY_ADDENDUM = (
-    "\n\nCRITICAL RETRY: the previous attempt produced an invalid image "
+    "\n\nCRITICAL RETRY (attempt 2): the previous attempt produced an invalid image "
     "({failure}). The output MUST show the entire sock standing upright, "
     "cuff at the top, filling most of the frame. Do not erase the sock, "
     "do not lay it horizontally, do not tilt it, do not show a mostly-empty canvas."
+)
+
+RETRY_ADDENDUM_ESCALATED = (
+    "\n\nFINAL RETRY (attempt 3): the previous attempts ALL produced invalid images "
+    "({failure}). Render ONLY the sock on pure white — nothing else. No floating text, "
+    "no poster graphics, no brand overlays, no background elements, no additional objects. "
+    "Match the reference mockup's exact pose and size. If you cannot do this cleanly, "
+    "output a simple plain sock with the logo centered on the shin — err on the side of "
+    "boring and clean over creative and wrong."
 )
 
 
@@ -162,31 +177,59 @@ def generate_one_mockup(
     }
 
 
+EXTREME_FILL_DRIFT = 0.90  # 2× source fill → hard-fail territory
+
+
 def _generate_with_retry(
-    provider, prompt: str, refs: list[bytes], max_retries: int = 1,
+    provider, prompt: str, refs: list[bytes], max_retries: int = 2,
     source_profile: Optional[dict] = None,
 ) -> tuple[bytes, dict, int]:
-    """Generate, run pose diagnostics, retry once with stricter prompt if the
-    output is erased, laid horizontally, or orientation drifts from the source.
-    Returns (final_png_bytes, diag, attempts)."""
-    png = provider.generate(prompt, reference_images=refs)
-    png = maybe_force_white_bg(png)
-    diag = pose_diagnostics(png, source_profile=source_profile)
-    attempts = 1
-    fail = describe_failure(diag)
-    if fail and attempts <= max_retries:
-        log.warning("🔁 retry triggered: %s", fail)
-        retry_prompt = prompt + RETRY_ADDENDUM.format(failure=fail)
-        png2 = provider.generate(retry_prompt, reference_images=refs)
-        png2 = maybe_force_white_bg(png2)
-        diag2 = pose_diagnostics(png2, source_profile=source_profile)
-        attempts = 2
-        fail2 = describe_failure(diag2)
-        if fail2:
-            log.warning("🔁 retry still failing: %s — returning retry output anyway", fail2)
-        png, diag = png2, diag2
-    diag["final_failure"] = describe_failure(diag)
-    return png, diag, attempts
+    """Generate, run pose diagnostics, retry up to `max_retries` times with escalating
+    prompts if the output is erased, laid horizontally, or orientation drifts from the
+    source. Returns (final_png_bytes, diag, attempts).
+
+    API exceptions (e.g. 400 INVALID_ARGUMENT transient failures) also trigger a retry
+    using the next escalation addendum."""
+    current_png, current_diag, attempts = None, None, 0
+    last_error: Optional[Exception] = None
+    for attempt in range(1, max_retries + 2):  # initial + up to max_retries retries
+        if attempt == 1:
+            retry_prompt = prompt
+        else:
+            reason = (
+                describe_failure(current_diag) if current_diag
+                else f"the provider raised {type(last_error).__name__}: {str(last_error)[:200]}"
+            )
+            addendum = RETRY_ADDENDUM if attempt == 2 else RETRY_ADDENDUM_ESCALATED
+            retry_prompt = prompt + addendum.format(failure=reason)
+            log.warning("🔁 retry %d triggered: %s", attempt - 1, reason)
+        try:
+            png = provider.generate(retry_prompt, reference_images=refs)
+            png = maybe_force_white_bg(png)
+            diag = pose_diagnostics(png, source_profile=source_profile)
+            current_png, current_diag = png, diag
+            attempts = attempt
+            if not describe_failure(diag):
+                break
+        except Exception as e:  # noqa: BLE001
+            log.warning("🔁 provider raised on attempt %d: %s", attempt, type(e).__name__)
+            last_error = e
+            attempts = attempt
+            continue
+    if current_png is None:
+        # Every attempt failed at the API level; re-raise the last error
+        raise last_error if last_error else RuntimeError("all provider attempts failed")
+
+    # Drop through to the original tail logic
+    final_fail = describe_failure(current_diag)
+    current_diag["final_failure"] = final_fail
+    current_diag["critical_failure"] = bool(
+        final_fail and current_diag.get("fill_drift", 0) > EXTREME_FILL_DRIFT
+    )
+    if final_fail:
+        log.warning("🔁 still failing after %d attempts: %s (critical=%s)",
+                    attempts, final_fail, current_diag["critical_failure"])
+    return current_png, current_diag, attempts
 
 
 def _slug(s: str) -> str:

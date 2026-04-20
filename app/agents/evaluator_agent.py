@@ -22,10 +22,11 @@ RUBRIC = """Score each criterion from 0.0 to 1.0 then return JSON (and nothing e
   no_distortion: no warping, artifacts, or weird textures
   pose_vertical: the sock stands upright with the cuff at the top and the toe pointing sideways (0.0 = tilted/horizontal, 1.0 = perfectly upright)
   sock_visible: a recognizable, full-size sock fills the majority of the image (0.0 = missing/tiny/erased, 1.0 = fills frame)
-  overall: the average of all six criteria above
+  composition_pure: the sock is the ONLY subject — no floating text, no poster graphics, no brand wordmarks or logo art OUTSIDE the sock's surface, no additional objects anywhere in the frame (0.0 = image contains anything beyond the sock itself, 1.0 = sock is the lone element on pure white)
+  overall: the average of all seven criteria above
   notes: ONE short sentence under 120 characters. Do not repeat words. No markdown.
 Return exactly this JSON schema (no markdown fences):
-{"logo_readable": 0.0, "placement_correct": 0.0, "color_palette": 0.0, "no_distortion": 0.0, "pose_vertical": 0.0, "sock_visible": 0.0, "overall": 0.0, "notes": "..."}
+{"logo_readable": 0.0, "placement_correct": 0.0, "color_palette": 0.0, "no_distortion": 0.0, "pose_vertical": 0.0, "sock_visible": 0.0, "composition_pure": 0.0, "overall": 0.0, "notes": "..."}
 """
 
 

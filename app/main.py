@@ -18,6 +18,7 @@ from app.db import (
     list_designs_for_run,
     list_logos_for_client,
     list_runs,
+    list_templates_used_by_client,
 )
 from app.logging_config import get_logger, setup_logging
 from app.orchestrator import handle_generate
@@ -145,6 +146,16 @@ def serve_logo(logo_id: int) -> FileResponse:
     return FileResponse(str(p), media_type="image/png", filename=row["filename"])
 
 
+@app.get("/templates/{index}.png")
+def serve_template(index: int) -> FileResponse:
+    from app.assets import get_mockup
+    try:
+        mock = get_mockup(index)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return FileResponse(str(mock.path), media_type="image/png", filename=mock.path.name)
+
+
 @app.get("/baselines/{design_id}")
 def serve_baseline(design_id: int) -> FileResponse:
     with connect() as con:
@@ -169,6 +180,33 @@ def get_logos(name: str) -> dict:
     for lg in logos:
         lg["url"] = f"/logos/{lg['id']}"
     return {"client": c, "logos": logos}
+
+
+@app.get("/clients/{name}/templates")
+def get_templates_used(name: str) -> dict:
+    from app.assets import mockup_pose_profile
+    c = get_client_by_name(name)
+    if not c:
+        raise HTTPException(status_code=404, detail="client not found")
+    rows = list_templates_used_by_client(c["id"])
+    templates = []
+    for r in rows:
+        idx = r["mockup_index"]
+        try:
+            profile = mockup_pose_profile(idx)
+        except Exception:  # noqa: BLE001
+            profile = {}
+        templates.append({
+            "mockup_index": idx,
+            "url": f"/templates/{idx}.png",
+            "render_count": r["render_count"],
+            "pose_profile": {
+                "aspect": profile.get("aspect"),
+                "toe_side": profile.get("toe_side"),
+                "frame_fill": profile.get("frame_fill"),
+            },
+        })
+    return {"client": c, "templates": templates}
 
 
 @app.get("/clients/{name}/baselines")

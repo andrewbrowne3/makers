@@ -138,10 +138,11 @@ async function showClient(name, linkEl) {
   const body = document.getElementById('body');
   body.innerHTML = '<p class="status">loading ' + name + '…</p>';
 
-  const [logos, designs, baselines] = await Promise.all([
+  const [logos, designs, baselines, templates] = await Promise.all([
     fetch(`/clients/${encodeURIComponent(name)}/logos`).then(r => r.json()),
     fetch(`/clients/${encodeURIComponent(name)}/designs`).then(r => r.json()),
     fetch(`/clients/${encodeURIComponent(name)}/baselines`).then(r => r.json()),
+    fetch(`/clients/${encodeURIComponent(name)}/templates`).then(r => r.json()),
   ]);
 
   let html = `<div class="section"><h2>${name}</h2></div>`;
@@ -183,6 +184,27 @@ async function showClient(name, linkEl) {
         </div>
         <div style="margin-top:.3rem;">${runPillHTML(d)}</div>
         ${d.evaluator_notes ? `<div class="note">${d.evaluator_notes}</div>` : ''}
+      </div>`;
+    });
+    html += `</div>`;
+  }
+  html += `</div>`;
+
+  // Templates used (source mockups that were fed into NB Pro for this client)
+  html += `<div class="section"><h2>Templates used (${templates.templates.length})</h2>`;
+  if (!templates.templates.length) {
+    html += `<p class="empty">No templates yet — this client hasn't had any AI renders recorded.</p>`;
+  } else {
+    html += `<div class="grid">`;
+    templates.templates.forEach(t => {
+      const pp = t.pose_profile || {};
+      html += `<div class="card">
+        <img src="${t.url}" onclick="openModal('${t.url}')" alt="template ${t.mockup_index}">
+        <div class="meta">
+          <span>template #${t.mockup_index}</span>
+          <span class="badge muted">${t.render_count}× used</span>
+        </div>
+        <div class="note">toe=${pp.toe_side ?? '—'} · aspect=${pp.aspect ? pp.aspect.toFixed(2) : '—'} · fill=${pp.frame_fill ? (pp.frame_fill*100).toFixed(0) + '%' : '—'}</div>
       </div>`;
     });
     html += `</div>`;
