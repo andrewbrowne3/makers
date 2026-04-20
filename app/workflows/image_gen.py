@@ -17,7 +17,7 @@ from typing import Optional
 
 import httpx
 
-from app.assets import crop_to_subject, get_mockup
+from app.assets import crop_to_subject, get_mockup, mockup_pose_profile
 from app.logging_config import get_logger
 from app.postprocess import describe_failure, maybe_force_white_bg, pose_diagnostics
 from app.providers.image_gen import get_image_gen
@@ -33,11 +33,30 @@ DEFAULT_PROMPT = (
     "Do NOT add any of the following: display stand, sock form, mannequin, hanger, hook, "
     "wire frame, armature, box, pedestal, shadow, reflection, gradient, or studio floor. "
     "Nothing but the sock itself should be visible. "
-    "The sock MUST stand upright vertically with the cuff at the top and the toe pointing "
-    "horizontally to one side, filling at least 70% of the image height. Do NOT tilt, "
-    "rotate, lay the sock down on its side, show it at an angle, or zoom out so it appears "
-    "tiny in the frame."
+    "POSE LOCK — match the reference mockup's pose exactly: same camera angle, same tilt, "
+    "same toe direction, same sock-to-frame proportion. If the reference shows the toe "
+    "pointing right, the output's toe must point right. If the reference fills ~60% of the "
+    "frame, the output must fill the same. Do NOT zoom in, zoom out, rotate, mirror, or "
+    "reframe the sock — treat the reference mockup's pose as a rigid constraint. Only the "
+    "colors, patterns, and logo content change; orientation and composition stay identical."
 )
+
+
+def _pose_hint(profile: dict) -> str:
+    """Build a short reference-specific pose addendum from a mockup's profile."""
+    toe = profile.get("toe_side")
+    aspect = profile.get("aspect") or 0.0
+    fill = profile.get("frame_fill") or 0.0
+    bits = []
+    if toe:
+        bits.append(f"toe pointing {toe}")
+    if aspect > 0:
+        bits.append(f"bbox aspect (height/width) ≈ {aspect:.2f}")
+    if fill > 0:
+        bits.append(f"frame fill ≈ {int(fill * 100)}%")
+    if not bits:
+        return ""
+    return " Reference-specific constraints: " + ", ".join(bits) + "."
 
 RETRY_ADDENDUM = (
     "\n\nCRITICAL RETRY: the previous attempt produced an invalid image "
@@ -105,7 +124,8 @@ def generate_one_mockup(
     if pre_crop:
         mock_bytes = crop_to_subject(mock_bytes)
 
-    prompt = _build_prompt(client_name, notes, colors)
+    source_profile = mockup_pose_profile(mockup_index)
+    prompt = _build_prompt(client_name, notes, colors) + _pose_hint(source_profile)
     if extra_prompt:
         prompt = prompt + " " + extra_prompt
     if retry_reason:
@@ -116,11 +136,13 @@ def generate_one_mockup(
         # caller-driven retry — single pass, no internal bbox-retry
         png = provider.generate(prompt, reference_images=[logo_bytes, mock_bytes])
         png = maybe_force_white_bg(png)
-        diag = pose_diagnostics(png)
+        diag = pose_diagnostics(png, source_profile=source_profile)
         diag["final_failure"] = describe_failure(diag)
         attempts = 1
     else:
-        png, diag, attempts = _generate_with_retry(provider, prompt, [logo_bytes, mock_bytes])
+        png, diag, attempts = _generate_with_retry(
+            provider, prompt, [logo_bytes, mock_bytes], source_profile=source_profile,
+        )
     log.info("🧵 image generated provider=%s bytes=%d attempts=%d", provider.name, len(png), attempts)
 
     s3 = get_s3()
@@ -140,12 +162,16 @@ def generate_one_mockup(
     }
 
 
-def _generate_with_retry(provider, prompt: str, refs: list[bytes], max_retries: int = 1) -> tuple[bytes, dict, int]:
+def _generate_with_retry(
+    provider, prompt: str, refs: list[bytes], max_retries: int = 1,
+    source_profile: Optional[dict] = None,
+) -> tuple[bytes, dict, int]:
     """Generate, run pose diagnostics, retry once with stricter prompt if the
-    output is erased or laid horizontally. Returns (final_png_bytes, diag, attempts)."""
+    output is erased, laid horizontally, or orientation drifts from the source.
+    Returns (final_png_bytes, diag, attempts)."""
     png = provider.generate(prompt, reference_images=refs)
     png = maybe_force_white_bg(png)
-    diag = pose_diagnostics(png)
+    diag = pose_diagnostics(png, source_profile=source_profile)
     attempts = 1
     fail = describe_failure(diag)
     if fail and attempts <= max_retries:
@@ -153,7 +179,7 @@ def _generate_with_retry(provider, prompt: str, refs: list[bytes], max_retries: 
         retry_prompt = prompt + RETRY_ADDENDUM.format(failure=fail)
         png2 = provider.generate(retry_prompt, reference_images=refs)
         png2 = maybe_force_white_bg(png2)
-        diag2 = pose_diagnostics(png2)
+        diag2 = pose_diagnostics(png2, source_profile=source_profile)
         attempts = 2
         fail2 = describe_failure(diag2)
         if fail2:

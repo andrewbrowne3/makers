@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageChops
@@ -86,6 +87,72 @@ def crop_to_subject(png_bytes: bytes, padding_pct: float = 0.08) -> bytes:
         w, h, cropped.width, cropped.height, bg_color,
     )
     return out.getvalue()
+
+
+def _pose_profile(png_bytes: bytes) -> dict:
+    """Compute a pose profile: bbox, aspect ratio, toe_side (left|right), frame_fill.
+
+    toe_side heuristic: within the bottom 40% of the sock bbox, count non-white pixels
+    left vs right of the bbox's horizontal midpoint. The heavier side is where the toe
+    (foot) extends — typical sock photos show the foot bending away from the ankle line.
+    """
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    bg = Image.new("RGB", img.size, (255, 255, 255))
+    diff = ImageChops.difference(img, bg)
+    bbox = diff.getbbox()
+    if not bbox:
+        return {
+            "bbox": None, "bbox_w": 0, "bbox_h": 0,
+            "aspect": 0.0, "toe_side": None, "frame_fill": 0.0,
+        }
+    left, top, right, bottom = bbox
+    w, h = right - left, bottom - top
+
+    # Count non-white pixels in the bottom 40% of the bbox, left vs right of center
+    foot_top = top + int(h * 0.60)
+    mid_x = left + w // 2
+    diff_rgb = diff.convert("L")  # luminance difference; 0 = identical to white
+    left_count = right_count = 0
+    for y in range(foot_top, bottom, 4):
+        for x in range(left, right, 4):
+            if diff_rgb.getpixel((x, y)) > 15:  # noise floor
+                if x < mid_x:
+                    left_count += 1
+                else:
+                    right_count += 1
+    toe_side = None
+    if left_count + right_count > 20:  # enough signal to decide
+        toe_side = "right" if right_count > left_count else "left"
+
+    frame_fill = (w * h) / max(1, img.width * img.height)
+    return {
+        "bbox": bbox,
+        "bbox_w": w,
+        "bbox_h": h,
+        "aspect": h / max(1, w),
+        "toe_side": toe_side,
+        "frame_fill": round(frame_fill, 3),
+        "image_size": (img.width, img.height),
+    }
+
+
+@lru_cache(maxsize=16)
+def mockup_pose_profile(index: int) -> dict:
+    """Cached pose profile for one of the 10 source mockup templates."""
+    mock = get_mockup(index)
+    data = mock.path.read_bytes()
+    profile = _pose_profile(data)
+    log.info(
+        "📐 mockup #%d profile: aspect=%.2f toe=%s fill=%.2f bbox=%sx%s",
+        index, profile["aspect"], profile["toe_side"], profile["frame_fill"],
+        profile["bbox_w"], profile["bbox_h"],
+    )
+    return profile
+
+
+def pose_profile_from_bytes(png_bytes: bytes) -> dict:
+    """Compute the pose profile of an arbitrary PNG (e.g. an output render)."""
+    return _pose_profile(png_bytes)
 
 
 def list_training_pairs() -> list[TrainingPair]:
