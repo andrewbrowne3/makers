@@ -85,6 +85,7 @@ def generate_one_mockup(
     notes: Optional[str] = None,
     pre_crop: bool = True,
     retry_reason: Optional[str] = None,
+    extra_prompt: Optional[str] = None,
 ) -> dict:
     """Execute the workflow for one mockup. Returns dict with image_url + debug info.
 
@@ -105,6 +106,8 @@ def generate_one_mockup(
         mock_bytes = crop_to_subject(mock_bytes)
 
     prompt = _build_prompt(client_name, notes, colors)
+    if extra_prompt:
+        prompt = prompt + " " + extra_prompt
     if retry_reason:
         prompt = prompt + RETRY_ADDENDUM.format(failure=retry_reason)
 

@@ -31,6 +31,14 @@ class GenerateRequest(BaseModel):
         "adhoc",
         description="Run category: 'adhoc' | 'batch' | 'regression' | 'ui'",
     )
+    designer_mode: Optional[bool] = Field(
+        None,
+        description="If true, designer agent proposes N creative directions per mockup (3× cost). Overrides env default.",
+    )
+    designer_directions: Optional[int] = Field(
+        None,
+        description="How many creative variations per mockup when designer_mode is on (default from env).",
+    )
 
 
 class MockupResult(BaseModel):

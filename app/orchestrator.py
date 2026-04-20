@@ -9,15 +9,19 @@ from typing import Any, Optional
 
 import httpx
 
+from app.agents.designer_agent import Direction, propose_directions, resolved_directions_count, should_use_designer
 from app.agents.evaluator_agent import build_evaluator
 from app.agents.question_agent import build_question_agent
-from app.assets import list_mockups
+from app.assets import get_mockup, list_mockups
 from app.config import CFG
 from app.db import create_run, finalize_run, record_design, sha256_file, upsert_client, upsert_logo
 from app.logging_config import get_logger
 from app.router import RouteDecision, get_router
 from app.schemas import GenerateRequest, GenerateResponse, MockupResult
 from app.workflows.image_gen import generate_one_mockup
+
+
+COST_PER_RENDER = 0.039  # NB Pro @ 1024
 
 log = get_logger("orchestrator")
 
@@ -29,6 +33,93 @@ def _build_query(req: GenerateRequest) -> str:
     if req.notes:
         bits.append(f"notes={req.notes}")
     return " | ".join(bits)
+
+
+def _directions_for(
+    req: GenerateRequest, designer_on: bool, n: int, mockup_index: int,
+) -> list[Optional[Direction]]:
+    """If designer is on, ask the designer for n directions. Otherwise return a
+    single None sentinel meaning 'render once, no extra prompt'."""
+    if not designer_on or n <= 1:
+        return [None]
+    # Load logo + mockup bytes for the designer's multimodal input
+    from pathlib import Path as _P
+    import httpx as _httpx
+
+    if req.logo_path and _P(req.logo_path).exists():
+        logo_bytes = _P(req.logo_path).read_bytes()
+    elif req.logo_url:
+        with _httpx.Client(timeout=30, follow_redirects=True) as c:
+            logo_bytes = c.get(req.logo_url).content
+    else:
+        logo_bytes = b""
+    try:
+        mock_bytes = get_mockup(mockup_index).path.read_bytes()
+    except Exception:  # noqa: BLE001
+        mock_bytes = b""
+    try:
+        dirs = propose_directions(
+            client_name=req.client_name,
+            logo_bytes=logo_bytes,
+            mockup_bytes=mock_bytes,
+            n=n,
+        )
+        return list(dirs)
+    except Exception as e:  # noqa: BLE001
+        log.warning("designer failed, single render: %s", e)
+        return [None]
+
+
+def _render_and_score(
+    req: GenerateRequest,
+    idx: int,
+    *,
+    extra_prompt: Optional[str],
+    direction_label: Optional[str],
+) -> dict:
+    """Render one variant (optionally with extra_prompt), score with evaluator,
+    auto-retry once if pose/visibility fails. Returns a flat dict."""
+    workflow_out = generate_one_mockup(
+        client_name=req.client_name,
+        logo_path=req.logo_path,
+        logo_url=req.logo_url,
+        mockup_index=idx,
+        colors=req.colors,
+        notes=req.notes,
+        extra_prompt=extra_prompt,
+    )
+    url = workflow_out["image_url"]
+    brief = f"client={req.client_name} mockup={idx} direction={direction_label or 'default'}"
+    score, ev_data = _run_evaluator(url, brief=brief)
+
+    total_attempts = int(workflow_out.get("attempts", 1))
+    reason = _evaluator_retry_reason(ev_data or {})
+    if reason:
+        log.warning("🔁 evaluator-driven retry (dir=%s): %s", direction_label or "default", reason)
+        workflow_out = generate_one_mockup(
+            client_name=req.client_name,
+            logo_path=req.logo_path,
+            logo_url=req.logo_url,
+            mockup_index=idx,
+            colors=req.colors,
+            notes=req.notes,
+            extra_prompt=extra_prompt,
+            retry_reason=reason,
+        )
+        url = workflow_out["image_url"]
+        score, ev_data = _run_evaluator(url, brief=brief)
+        total_attempts += int(workflow_out.get("attempts", 1))
+
+    return {
+        "image_url": url,
+        "s3_key": workflow_out["s3_key"],
+        "prompt": workflow_out["prompt"],
+        "provider": workflow_out["provider"],
+        "score": score,
+        "evaluator": ev_data,
+        "attempts": total_attempts,
+        "direction_label": direction_label,
+    }
 
 
 def _evaluator_retry_reason(ev_data: dict) -> Optional[str]:
@@ -108,84 +199,96 @@ def handle_generate(req: GenerateRequest) -> GenerateResponse:
         client_id = upsert_client(req.client_name)
         logo_id = _register_logo(client_id, req)
         import json as _json
+        designer_on = should_use_designer(req.designer_mode)
+        n_directions = resolved_directions_count(req.designer_directions) if designer_on else 1
         run_id = create_run(
-            label=req.run_label or f"{req.client_name} × {len(indices)} mock(s)",
+            label=req.run_label or f"{req.client_name} × {len(indices)} mock(s){' · designer' if designer_on else ''}",
             kind=req.run_kind or "adhoc",
             client_id=client_id,
             request_json=_json.dumps(req.model_dump(), ensure_ascii=False),
         )
         details["run_id"] = run_id
+        details["designer_mode"] = designer_on
+        details["n_directions"] = n_directions
         results: list[MockupResult] = []
         per_mockup: list[dict] = []
+        spent_usd = 0.0
+        cost_cap = CFG.designer.cost_cap_usd if designer_on else None
 
         for idx in indices:
-            try:
-                workflow_out = generate_one_mockup(
-                    client_name=req.client_name,
-                    logo_path=req.logo_path,
-                    logo_url=req.logo_url,
-                    mockup_index=idx,
-                    colors=req.colors,
-                    notes=req.notes,
-                )
-                url = workflow_out["image_url"]
-                brief = f"client={req.client_name} mockup={idx} prompt={workflow_out['prompt']}"
-                score, ev_data = _run_evaluator(url, brief=brief)
+            if cost_cap is not None and spent_usd >= cost_cap:
+                log.warning("💰 cost cap reached ($%.2f >= $%.2f), skipping mock#%d and remaining",
+                            spent_usd, cost_cap, idx)
+                results.append(MockupResult(mockup_index=idx, error=f"cost cap ${cost_cap:.2f} reached"))
+                per_mockup.append({"mockup_index": idx, "error": "cost_cap_reached"})
+                continue
 
-                # Evaluator-driven retry: if pose or visibility failed, try once more
-                reason = _evaluator_retry_reason(ev_data or {})
-                total_attempts = int(workflow_out.get("attempts", 1))
-                if reason:
-                    log.warning("🔁 evaluator-driven retry: %s", reason)
-                    workflow_out = generate_one_mockup(
-                        client_name=req.client_name,
-                        logo_path=req.logo_path,
-                        logo_url=req.logo_url,
-                        mockup_index=idx,
-                        colors=req.colors,
-                        notes=req.notes,
-                        retry_reason=reason,
+            directions = _directions_for(req, designer_on, n_directions, idx)
+            variants: list[dict] = []
+
+            for d in directions:
+                try:
+                    out = _render_and_score(
+                        req,
+                        idx,
+                        extra_prompt=d.prompt_addendum if d else None,
+                        direction_label=d.label if d else None,
                     )
-                    url = workflow_out["image_url"]
-                    score, ev_data = _run_evaluator(url, brief=brief)
-                    total_attempts += int(workflow_out.get("attempts", 1))
-
-                record_design(
-                    client_id=client_id,
-                    logo_id=logo_id,
-                    mockup_index=idx,
-                    s3_key=workflow_out["s3_key"],
-                    prompt=workflow_out["prompt"],
-                    provider=workflow_out["provider"],
-                    evaluator=ev_data or None,
-                    source="ai_generated",
-                    attempts=total_attempts,
-                    run_id=run_id,
-                )
-
-                results.append(
-                    MockupResult(
+                    spent_usd += COST_PER_RENDER * int(out["attempts"])
+                    record_design(
+                        client_id=client_id,
+                        logo_id=logo_id,
                         mockup_index=idx,
-                        image_url=url,
-                        evaluator_score=score,
-                        error=None,
+                        s3_key=out["s3_key"],
+                        prompt=out["prompt"],
+                        provider=out["provider"],
+                        evaluator=out["evaluator"] or None,
+                        source="ai_generated",
+                        attempts=out["attempts"],
+                        run_id=run_id,
+                        direction_label=d.label if d else None,
                     )
+                    variants.append(out)
+                except Exception as e:  # noqa: BLE001
+                    log.exception("variant failed mock=%d dir=%s: %s", idx, d.label if d else "default", e)
+                    variants.append({"error": str(e), "direction_label": d.label if d else None})
+
+            # Pick hero by evaluator score (highest wins; ties go to first)
+            scored = [(i, v.get("score")) for i, v in enumerate(variants) if v.get("score") is not None]
+            hero_idx = max(scored, key=lambda x: x[1])[0] if scored else 0
+            hero = variants[hero_idx] if variants else None
+
+            if hero and hero.get("s3_key"):
+                from app.db import mark_hero
+                mark_hero(run_id=run_id, mockup_index=idx, s3_key=hero["s3_key"])
+
+            results.append(
+                MockupResult(
+                    mockup_index=idx,
+                    image_url=(hero or {}).get("image_url"),
+                    evaluator_score=(hero or {}).get("score"),
+                    error=None if hero and hero.get("image_url") else "no variant succeeded",
                 )
-                per_mockup.append({
-                    "mockup_index": idx,
-                    "mockup_file": workflow_out["mockup_file"],
-                    "provider": workflow_out["provider"],
-                    "prompt": workflow_out["prompt"],
-                    "evaluator": ev_data,
-                })
-            except Exception as e:  # noqa: BLE001
-                log.exception("workflow failed for mockup=%d: %s", idx, e)
-                results.append(MockupResult(mockup_index=idx, error=str(e)))
-                per_mockup.append({"mockup_index": idx, "error": str(e)})
+            )
+            per_mockup.append({
+                "mockup_index": idx,
+                "variants": [
+                    {
+                        "direction_label": v.get("direction_label"),
+                        "image_url": v.get("image_url"),
+                        "score": v.get("score"),
+                        "attempts": v.get("attempts"),
+                        "error": v.get("error"),
+                    }
+                    for v in variants
+                ],
+                "hero_direction": variants[hero_idx].get("direction_label") if variants else None,
+            })
 
         details["mockups"] = per_mockup
         details["client_id"] = client_id
         details["logo_id"] = logo_id
+        details["total_cost_usd"] = round(spent_usd, 4)
         finalize_run(run_id)
         return GenerateResponse(
             status="ok",

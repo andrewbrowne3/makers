@@ -55,6 +55,12 @@
   <label>Designer notes (optional)
     <textarea id="notes" rows="2" placeholder="embroidered feel, athletic fit…"></textarea>
   </label>
+  <label style="flex-direction:row;align-items:flex-start;gap:.5rem;font-weight:400;">
+    <input type="checkbox" id="designer_mode" style="margin-top:.25rem;">
+    <span>
+      <strong>Designer mode</strong> — generate 3 creative variations per mockup (3× cost, ~$0.12/mockup or $1.17 for a full 10-mockup catalog). Evaluator auto-picks the hero but you can override in the gallery.
+    </span>
+  </label>
   <button type="submit" id="submit-btn">Generate</button>
   <div class="status" id="status"></div>
 </form>
@@ -114,6 +120,8 @@ document.getElementById('gen-form').addEventListener('submit', async (e) => {
     mockups,
     colors: document.getElementById('colors').value.split(',').map(s => s.trim()).filter(Boolean),
     notes: document.getElementById('notes').value || null,
+    designer_mode: document.getElementById('designer_mode').checked,
+    run_kind: 'ui',
   };
 
   const t0 = Date.now();

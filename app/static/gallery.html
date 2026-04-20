@@ -26,6 +26,9 @@
   .kind-legacy     { background: #8884;     color: #666;    }
   .run-pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: .72rem; font-weight: 600; margin-left: .3rem; cursor: pointer; }
   .retry-icon { margin-left: .25rem; }
+  .hero-icon { margin-left: .25rem; }
+  .direction-pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: .72rem; background: #8882; color: #888; margin-right: .3rem; }
+  .card.hero { outline: 2px solid #28a745; outline-offset: 2px; }
   .filters { display: flex; gap: .4rem; flex-wrap: wrap; margin: .5rem 0 1rem; }
   .filters label { font-weight: 400; font-size: .8rem; cursor: pointer; padding: .2rem .5rem; border: 1px solid #6663; border-radius: 999px; display: flex; align-items: center; gap: .3rem; }
   .filters input { margin: 0; }
@@ -170,10 +173,12 @@ async function showClient(name, linkEl) {
       const score = d.evaluator_score != null ? d.evaluator_score.toFixed(2) : '—';
       const src = d.image_url || '';
       const retryIcon = d.attempts > 1 ? ' <span class="retry-icon" title="retried">🔁</span>' : '';
-      html += `<div class="card">
+      const heroIcon = d.is_hero ? ' <span class="hero-icon" title="hero variant">🏆</span>' : '';
+      const dirPill = d.direction_label ? `<span class="direction-pill">${d.direction_label}</span>` : '';
+      html += `<div class="card${d.is_hero ? ' hero' : ''}">
         ${src ? `<img src="${src}" onclick="openModal('${src}')" alt="mockup">` : '<div style="aspect-ratio:1;background:#dc354522;color:#dc3545;display:flex;align-items:center;justify-content:center;border-radius:4px;">no image</div>'}
         <div class="meta">
-          <span>mock#${d.mockup_index ?? '?'} v${d.version}${retryIcon}</span>
+          <span>${dirPill}mock#${d.mockup_index ?? '?'} v${d.version}${retryIcon}${heroIcon}</span>
           <span class="badge ${cls}">${score}</span>
         </div>
         <div style="margin-top:.3rem;">${runPillHTML(d)}</div>
@@ -247,22 +252,35 @@ async function showRun(runId) {
       avg=<span class="badge ${scoreClass(run.avg_score)}">${run.avg_score != null ? run.avg_score.toFixed(3) : '—'}</span> ·
       cost=$${(run.total_cost_usd || 0).toFixed(3)}</p>
   </div>`;
-  html += `<div class="grid">`;
+  // Group designs by mockup_index so variants sit next to each other
+  const groups = {};
   j.designs.forEach(d => {
-    const cls = scoreClass(d.evaluator_score);
-    const score = d.evaluator_score != null ? d.evaluator_score.toFixed(2) : '—';
-    const src = d.image_url || '';
-    const retryIcon = d.attempts > 1 ? ' <span class="retry-icon" title="retried">🔁</span>' : '';
-    html += `<div class="card">
-      ${src ? `<img src="${src}" onclick="openModal('${src}')" alt="mockup">` : '<div style="aspect-ratio:1;background:#dc354522;color:#dc3545;display:flex;align-items:center;justify-content:center;border-radius:4px;">no image</div>'}
-      <div class="meta">
-        <span>mock#${d.mockup_index ?? '?'} v${d.version}${retryIcon}</span>
-        <span class="badge ${cls}">${score}</span>
-      </div>
-      ${d.evaluator_notes ? `<div class="note">${d.evaluator_notes}</div>` : ''}
-    </div>`;
+    const k = d.mockup_index ?? 'none';
+    (groups[k] = groups[k] || []).push(d);
   });
-  html += `</div>`;
+  Object.entries(groups).forEach(([mk, list]) => {
+    if (list.length > 1) {
+      html += `<h3 style="margin-top:1.5rem;color:#888;font-weight:600;">mockup #${mk} — ${list.length} variants</h3>`;
+    }
+    html += `<div class="grid">`;
+    list.forEach(d => {
+      const cls = scoreClass(d.evaluator_score);
+      const score = d.evaluator_score != null ? d.evaluator_score.toFixed(2) : '—';
+      const src = d.image_url || '';
+      const retryIcon = d.attempts > 1 ? ' <span class="retry-icon" title="retried">🔁</span>' : '';
+      const heroIcon = d.is_hero ? ' <span class="hero-icon" title="hero variant">🏆</span>' : '';
+      const dirPill = d.direction_label ? `<span class="direction-pill">${d.direction_label}</span>` : '';
+      html += `<div class="card${d.is_hero ? ' hero' : ''}">
+        ${src ? `<img src="${src}" onclick="openModal('${src}')" alt="mockup">` : '<div style="aspect-ratio:1;background:#dc354522;color:#dc3545;display:flex;align-items:center;justify-content:center;border-radius:4px;">no image</div>'}
+        <div class="meta">
+          <span>${dirPill}mock#${d.mockup_index ?? '?'} v${d.version}${retryIcon}${heroIcon}</span>
+          <span class="badge ${cls}">${score}</span>
+        </div>
+        ${d.evaluator_notes ? `<div class="note">${d.evaluator_notes}</div>` : ''}
+      </div>`;
+    });
+    html += `</div>`;
+  });
   body.innerHTML = html;
 }
 

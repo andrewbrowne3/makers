@@ -91,6 +91,13 @@ class EvaluatorConfig:
 
 
 @dataclass(frozen=True)
+class DesignerConfig:
+    enabled_by_default: bool = _get_bool("DESIGNER_MODE", False)
+    directions: int = int(_get_float("DESIGNER_DIRECTIONS", 3))
+    cost_cap_usd: float = _get_float("DESIGNER_COST_CAP_USD", 1.50)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     port: int = int(_get("PORT", "8000"))
     log_level: str = _get("LOG_LEVEL", "INFO")
@@ -101,6 +108,7 @@ class AppConfig:
     s3: S3Config = field(default_factory=S3Config)
     assets: AssetsConfig = field(default_factory=AssetsConfig)
     evaluator: EvaluatorConfig = field(default_factory=EvaluatorConfig)
+    designer: DesignerConfig = field(default_factory=DesignerConfig)
 
 
 CFG = AppConfig()

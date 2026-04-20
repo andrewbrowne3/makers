@@ -146,6 +146,8 @@ def _init_schema() -> None:
             "ALTER TABLE designs ADD COLUMN retry_of INTEGER REFERENCES designs(id) ON DELETE SET NULL",
             "ALTER TABLE designs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE designs ADD COLUMN run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL",
+            "ALTER TABLE designs ADD COLUMN direction_label TEXT",
+            "ALTER TABLE designs ADD COLUMN is_hero INTEGER NOT NULL DEFAULT 0",
         ):
             try:
                 con.execute(stmt)
@@ -210,6 +212,7 @@ def record_design(
     retry_of: Optional[int] = None,
     attempts: int = 1,
     run_id: Optional[int] = None,
+    direction_label: Optional[str] = None,
 ) -> int:
     ev_score = None
     ev_notes = None
@@ -241,12 +244,12 @@ def record_design(
             INSERT INTO designs
                 (logo_id, client_id, mockup_index, s3_key, local_path, prompt,
                  provider, evaluator_score, evaluator_notes, evaluator_json,
-                 source, version, retry_of, attempts, run_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 source, version, retry_of, attempts, run_id, direction_label)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (logo_id, client_id, mockup_index, s3_key, local_path, prompt,
              provider, ev_score, ev_notes, ev_json, source, version,
-             retry_of, attempts, run_id),
+             retry_of, attempts, run_id, direction_label),
         )
         design_id = int(cur.lastrowid)
         log.info("💾 design recorded id=%d run=%s client=%s mock=%s v=%d source=%s attempts=%d",
@@ -327,6 +330,21 @@ def get_run(run_id: int) -> Optional[dict]:
             (run_id,),
         ).fetchone()
         return dict(row) if row else None
+
+
+def mark_hero(*, run_id: int, mockup_index: int, s3_key: str) -> None:
+    """Set is_hero=1 on the design matching (run_id, mockup_index, s3_key); clear
+    the flag on sibling variants of the same mockup within the run."""
+    with connect() as con:
+        con.execute(
+            "UPDATE designs SET is_hero=0 WHERE run_id=? AND mockup_index=?",
+            (run_id, mockup_index),
+        )
+        con.execute(
+            "UPDATE designs SET is_hero=1 WHERE run_id=? AND mockup_index=? AND s3_key=?",
+            (run_id, mockup_index, s3_key),
+        )
+    log.info("🏆 hero set run=%d mock=%d key=%s", run_id, mockup_index, s3_key)
 
 
 def list_designs_for_run(run_id: int) -> list[dict]:
