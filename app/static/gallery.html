@@ -19,6 +19,16 @@
   .meta { font-size: .82rem; color: #888; display: flex; justify-content: space-between; margin-top: .4rem; align-items: center; }
   .badge { padding: 2px 8px; border-radius: 999px; font-weight: 600; font-size: .78rem; }
   .good { background: #28a74522; color: #28a745; } .meh { background: #ff950022; color: #ff9500; } .bad { background: #dc354522; color: #dc3545; } .muted { background: #8884; color: #666; }
+  .kind-ui         { background: #28a74522; color: #28a745; }
+  .kind-adhoc      { background: #0a84ff22; color: #0a84ff; }
+  .kind-batch      { background: #a855f722; color: #a855f7; }
+  .kind-regression { background: #f9731622; color: #f97316; }
+  .kind-legacy     { background: #8884;     color: #666;    }
+  .run-pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: .72rem; font-weight: 600; margin-left: .3rem; cursor: pointer; }
+  .retry-icon { margin-left: .25rem; }
+  .filters { display: flex; gap: .4rem; flex-wrap: wrap; margin: .5rem 0 1rem; }
+  .filters label { font-weight: 400; font-size: .8rem; cursor: pointer; padding: .2rem .5rem; border: 1px solid #6663; border-radius: 999px; display: flex; align-items: center; gap: .3rem; }
+  .filters input { margin: 0; }
   .note { font-size: .78rem; color: #aaa; margin-top: .35rem; line-height: 1.35; max-height: 3.4em; overflow: hidden; }
   .empty { color: #888; font-style: italic; padding: .5rem 0; }
   .logo-row { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
@@ -57,6 +67,40 @@ function scoreClass(s) {
   if (s >= 0.7) return 'good';
   if (s >= 0.4) return 'meh';
   return 'bad';
+}
+
+function runKindFor(d) {
+  return d.run_kind || (d.run_id ? 'adhoc' : 'legacy');
+}
+
+function runPillHTML(d) {
+  const kind = runKindFor(d);
+  if (d.run_id) {
+    return `<span class="run-pill kind-${kind}" onclick="event.stopPropagation();showRun(${d.run_id});document.getElementById('view-runs').classList.add('active');document.getElementById('view-clients').classList.remove('active');">${kind} · run#${d.run_id}</span>`;
+  }
+  return `<span class="run-pill kind-legacy">legacy</span>`;
+}
+
+const KINDS = ['ui', 'adhoc', 'batch', 'regression', 'legacy'];
+let activeFilters = new Set(KINDS);
+
+function filtersHTML() {
+  return `<div class="filters">
+    <span style="color:#888;font-size:.8rem;">Show:</span>
+    ${KINDS.map(k => `<label class="kind-${k}">
+      <input type="checkbox" data-kind="${k}" ${activeFilters.has(k) ? 'checked' : ''}> ${k}
+    </label>`).join('')}
+  </div>`;
+}
+
+function attachFilterListeners(onChange) {
+  document.querySelectorAll('.filters input').forEach(cb => {
+    cb.onchange = () => {
+      const k = cb.dataset.kind;
+      if (cb.checked) activeFilters.add(k); else activeFilters.delete(k);
+      onChange();
+    };
+  });
 }
 
 function openModal(src) {
@@ -114,21 +158,25 @@ async function showClient(name, linkEl) {
 
   // AI-generated designs
   const ai = designs.designs.filter(d => d.source === 'ai_generated');
-  html += `<div class="section"><h2>AI renders (${ai.length})</h2>`;
-  if (!ai.length) {
-    html += `<p class="empty">No AI renders yet for this client.</p>`;
+  const visible = ai.filter(d => activeFilters.has(runKindFor(d)));
+  html += `<div class="section"><h2>AI renders (${visible.length}/${ai.length})</h2>`;
+  html += filtersHTML();
+  if (!visible.length) {
+    html += `<p class="empty">${ai.length ? 'All renders hidden by filter.' : 'No AI renders yet for this client.'}</p>`;
   } else {
-    html += `<div class="grid">`;
-    ai.forEach(d => {
+    html += `<div class="grid" id="ai-grid">`;
+    visible.forEach(d => {
       const cls = scoreClass(d.evaluator_score);
       const score = d.evaluator_score != null ? d.evaluator_score.toFixed(2) : '—';
       const src = d.image_url || '';
+      const retryIcon = d.attempts > 1 ? ' <span class="retry-icon" title="retried">🔁</span>' : '';
       html += `<div class="card">
         ${src ? `<img src="${src}" onclick="openModal('${src}')" alt="mockup">` : '<div style="aspect-ratio:1;background:#dc354522;color:#dc3545;display:flex;align-items:center;justify-content:center;border-radius:4px;">no image</div>'}
         <div class="meta">
-          <span>mock#${d.mockup_index ?? '?'} v${d.version}</span>
+          <span>mock#${d.mockup_index ?? '?'} v${d.version}${retryIcon}</span>
           <span class="badge ${cls}">${score}</span>
         </div>
+        <div style="margin-top:.3rem;">${runPillHTML(d)}</div>
         ${d.evaluator_notes ? `<div class="note">${d.evaluator_notes}</div>` : ''}
       </div>`;
     });
@@ -153,6 +201,7 @@ async function showClient(name, linkEl) {
   html += `</div>`;
 
   body.innerHTML = html;
+  attachFilterListeners(() => showClient(name, linkEl));
 }
 
 async function loadRuns() {
@@ -175,8 +224,8 @@ async function loadRuns() {
     html += `<div class="run-row" onclick="showRun(${run.id})">
       <div class="label">${run.label || '(unlabeled)'}<div style="font-size:.75rem;color:#888;">${run.created_at}</div></div>
       <div>${run.client_name || '—'}</div>
-      <div>${run.kind}</div>
-      <div>${run.n_renders}${run.n_retries ? ` (+${run.n_retries} retry)` : ''}</div>
+      <div><span class="badge kind-${run.kind}">${run.kind}</span></div>
+      <div>${run.n_renders}${run.n_retries ? ` <span class="retry-icon" title="retries">🔁${run.n_retries}</span>` : ''}</div>
       <div><span class="badge ${avgCls}">${avg}</span></div>
       <div>$${(run.total_cost_usd || 0).toFixed(3)}</div>
     </div>`;
@@ -193,7 +242,8 @@ async function showRun(runId) {
   let html = `<div class="section"><a href="#" onclick="loadRuns();return false;">← all runs</a>
     <h2>${run.label || '(unlabeled)'} <span style="font-weight:400;font-size:.9rem;color:#888;">#${run.id}</span></h2>
     <p style="color:#888;">${run.created_at} → ${run.completed_at || 'running'} ·
-      kind=${run.kind} · renders=${run.n_renders}${run.n_retries ? ` (+${run.n_retries} retry)` : ''} ·
+      kind=<span class="badge kind-${run.kind}">${run.kind}</span> ·
+      renders=${run.n_renders}${run.n_retries ? ` <span class="retry-icon">🔁${run.n_retries}</span>` : ''} ·
       avg=<span class="badge ${scoreClass(run.avg_score)}">${run.avg_score != null ? run.avg_score.toFixed(3) : '—'}</span> ·
       cost=$${(run.total_cost_usd || 0).toFixed(3)}</p>
   </div>`;
@@ -202,10 +252,11 @@ async function showRun(runId) {
     const cls = scoreClass(d.evaluator_score);
     const score = d.evaluator_score != null ? d.evaluator_score.toFixed(2) : '—';
     const src = d.image_url || '';
+    const retryIcon = d.attempts > 1 ? ' <span class="retry-icon" title="retried">🔁</span>' : '';
     html += `<div class="card">
       ${src ? `<img src="${src}" onclick="openModal('${src}')" alt="mockup">` : '<div style="aspect-ratio:1;background:#dc354522;color:#dc3545;display:flex;align-items:center;justify-content:center;border-radius:4px;">no image</div>'}
       <div class="meta">
-        <span>mock#${d.mockup_index ?? '?'} v${d.version}${d.attempts > 1 ? ` · ${d.attempts} tries` : ''}</span>
+        <span>mock#${d.mockup_index ?? '?'} v${d.version}${retryIcon}</span>
         <span class="badge ${cls}">${score}</span>
       </div>
       ${d.evaluator_notes ? `<div class="note">${d.evaluator_notes}</div>` : ''}

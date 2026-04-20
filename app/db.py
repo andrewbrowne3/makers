@@ -141,6 +141,16 @@ def connect() -> Iterator[sqlite3.Connection]:
 def _init_schema() -> None:
     with connect() as con:
         con.executescript(SCHEMA)
+        # Idempotent column migrations for DBs created before these columns existed
+        for stmt in (
+            "ALTER TABLE designs ADD COLUMN retry_of INTEGER REFERENCES designs(id) ON DELETE SET NULL",
+            "ALTER TABLE designs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE designs ADD COLUMN run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL",
+        ):
+            try:
+                con.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
 
 
 _init_schema()
@@ -322,7 +332,12 @@ def get_run(run_id: int) -> Optional[dict]:
 def list_designs_for_run(run_id: int) -> list[dict]:
     with connect() as con:
         rows = con.execute(
-            "SELECT * FROM designs WHERE run_id = ? ORDER BY mockup_index, version",
+            """
+            SELECT d.*, r.kind AS run_kind, r.label AS run_label
+              FROM designs d LEFT JOIN runs r ON r.id = d.run_id
+             WHERE d.run_id = ?
+             ORDER BY d.mockup_index, d.version
+            """,
             (run_id,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -361,21 +376,25 @@ def list_designs(
     where = []
     args: list[Any] = []
     if client_id is not None:
-        where.append("client_id = ?")
+        where.append("d.client_id = ?")
         args.append(client_id)
     if logo_id is not None:
-        where.append("logo_id = ?")
+        where.append("d.logo_id = ?")
         args.append(logo_id)
     if mockup_index is not None:
-        where.append("mockup_index = ?")
+        where.append("d.mockup_index = ?")
         args.append(mockup_index)
     if source is not None:
-        where.append("source = ?")
+        where.append("d.source = ?")
         args.append(source)
-    sql = "SELECT * FROM designs"
+    sql = """
+        SELECT d.*, r.kind AS run_kind, r.label AS run_label
+          FROM designs d
+          LEFT JOIN runs r ON r.id = d.run_id
+    """
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY created_at DESC LIMIT ?"
+    sql += " ORDER BY d.created_at DESC LIMIT ?"
     args.append(limit)
     with connect() as con:
         rows = con.execute(sql, args).fetchall()
