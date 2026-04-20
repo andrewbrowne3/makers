@@ -84,10 +84,17 @@ def generate_one_mockup(
     colors: Optional[list[str]] = None,
     notes: Optional[str] = None,
     pre_crop: bool = True,
+    retry_reason: Optional[str] = None,
 ) -> dict:
-    """Execute the workflow for one mockup. Returns dict with image_url + debug info."""
+    """Execute the workflow for one mockup. Returns dict with image_url + debug info.
+
+    If `retry_reason` is set, the caller is driving a retry (e.g. the orchestrator
+    after an evaluator-flagged failure). The reason is prepended to the prompt
+    and the workflow's internal bbox-retry is skipped (caller decides).
+    """
     colors = colors or []
-    log.info("🧵 workflow start client=%s mock=%d pre_crop=%s", client_name, mockup_index, pre_crop)
+    log.info("🧵 workflow start client=%s mock=%d pre_crop=%s retry=%s",
+             client_name, mockup_index, pre_crop, bool(retry_reason))
 
     logo_bytes = _load_logo(logo_path=logo_path, logo_url=logo_url)
 
@@ -98,9 +105,19 @@ def generate_one_mockup(
         mock_bytes = crop_to_subject(mock_bytes)
 
     prompt = _build_prompt(client_name, notes, colors)
+    if retry_reason:
+        prompt = prompt + RETRY_ADDENDUM.format(failure=retry_reason)
 
     provider = get_image_gen()
-    png, diag, attempts = _generate_with_retry(provider, prompt, [logo_bytes, mock_bytes])
+    if retry_reason:
+        # caller-driven retry — single pass, no internal bbox-retry
+        png = provider.generate(prompt, reference_images=[logo_bytes, mock_bytes])
+        png = maybe_force_white_bg(png)
+        diag = pose_diagnostics(png)
+        diag["final_failure"] = describe_failure(diag)
+        attempts = 1
+    else:
+        png, diag, attempts = _generate_with_retry(provider, prompt, [logo_bytes, mock_bytes])
     log.info("🧵 image generated provider=%s bytes=%d attempts=%d", provider.name, len(png), attempts)
 
     s3 = get_s3()

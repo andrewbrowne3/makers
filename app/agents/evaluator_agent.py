@@ -15,16 +15,17 @@ from app.providers.llm import get_llm
 
 log = get_logger("agent.evaluator")
 
-RUBRIC = """Score each criterion from 0.0 to 1.0 then return JSON:
+RUBRIC = """Score each criterion from 0.0 to 1.0 then return JSON (and nothing else — no prose, no code fences):
   logo_readable: the logo is crisp, legible, and recognizable
   placement_correct: the logo is in the expected garment region
   color_palette: the brand colors are faithfully rendered
   no_distortion: no warping, artifacts, or weird textures
-  pose_vertical: the sock stands upright with the cuff at the top and the toe pointing sideways — NOT tilted, rotated, or laid on its side (0.0 if tilted/horizontal, 1.0 if perfectly upright)
-  sock_visible: a recognizable, full-size sock occupies the majority of the image — NOT erased, missing, tiny, or cropped (0.0 if the sock is missing or nearly invisible, 1.0 if it fills the frame well)
-overall: the average of all six criteria above.
-Return exactly this JSON schema:
-  {"logo_readable": 0.0, "placement_correct": 0.0, "color_palette": 0.0, "no_distortion": 0.0, "pose_vertical": 0.0, "sock_visible": 0.0, "overall": 0.0, "notes": "..."}
+  pose_vertical: the sock stands upright with the cuff at the top and the toe pointing sideways (0.0 = tilted/horizontal, 1.0 = perfectly upright)
+  sock_visible: a recognizable, full-size sock fills the majority of the image (0.0 = missing/tiny/erased, 1.0 = fills frame)
+  overall: the average of all six criteria above
+  notes: ONE short sentence under 120 characters. Do not repeat words. No markdown.
+Return exactly this JSON schema (no markdown fences):
+{"logo_readable": 0.0, "placement_correct": 0.0, "color_palette": 0.0, "no_distortion": 0.0, "pose_vertical": 0.0, "sock_visible": 0.0, "overall": 0.0, "notes": "..."}
 """
 
 
@@ -45,13 +46,42 @@ class EvaluatorAgent:
 
 
 def _extract_json(text: str) -> Optional[dict]:
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return None
+    """Robust JSON extraction that tolerates ```json fences, trailing prose,
+    truncated repetition loops inside string fields, and greedy-match fallback."""
+    # strip common markdown fences
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE)
+
+    # first try: greedy {...} match
+    m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    # second try: find the opening brace and attempt to parse progressively
+    # smaller tails, stopping at the largest valid JSON
+    start = cleaned.find("{")
+    if start >= 0:
+        # walk back from end, trim tokens from notes field if needed
+        # try to fix common "notes" token repetition ("mockup mockup mockup...")
+        # by truncating anything >200 chars in the notes field
+        candidate = cleaned[start:]
+        candidate = re.sub(
+            r'("notes"\s*:\s*")([^"]{200,})(")',
+            lambda m: m.group(1) + m.group(2)[:120].rstrip() + m.group(3),
+            candidate,
+            count=1,
+        )
+        # greedy close
+        m2 = re.search(r"\{.*\}", candidate, re.DOTALL)
+        if m2:
+            try:
+                return json.loads(m2.group(0))
+            except json.JSONDecodeError:
+                pass
+
+    return None
 
 
 def build_evaluator() -> Optional[EvaluatorAgent]:

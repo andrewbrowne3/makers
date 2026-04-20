@@ -31,6 +31,22 @@ def _build_query(req: GenerateRequest) -> str:
     return " | ".join(bits)
 
 
+def _evaluator_retry_reason(ev_data: dict) -> Optional[str]:
+    """Translate evaluator scores into a retry reason string, if warranted."""
+    if not ev_data:
+        return None
+    pose = ev_data.get("pose_vertical")
+    vis = ev_data.get("sock_visible")
+    try:
+        if pose is not None and float(pose) < 0.5:
+            return f"evaluator flagged the sock as tilted or laid horizontally (pose_vertical={pose})"
+        if vis is not None and float(vis) < 0.5:
+            return f"evaluator flagged the sock as missing or too small (sock_visible={vis})"
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def _run_evaluator(image_url: str, brief: str) -> tuple[Optional[float], dict]:
     if not CFG.evaluator.enabled:
         return None, {}
@@ -116,6 +132,24 @@ def handle_generate(req: GenerateRequest) -> GenerateResponse:
                 brief = f"client={req.client_name} mockup={idx} prompt={workflow_out['prompt']}"
                 score, ev_data = _run_evaluator(url, brief=brief)
 
+                # Evaluator-driven retry: if pose or visibility failed, try once more
+                reason = _evaluator_retry_reason(ev_data or {})
+                total_attempts = int(workflow_out.get("attempts", 1))
+                if reason:
+                    log.warning("🔁 evaluator-driven retry: %s", reason)
+                    workflow_out = generate_one_mockup(
+                        client_name=req.client_name,
+                        logo_path=req.logo_path,
+                        logo_url=req.logo_url,
+                        mockup_index=idx,
+                        colors=req.colors,
+                        notes=req.notes,
+                        retry_reason=reason,
+                    )
+                    url = workflow_out["image_url"]
+                    score, ev_data = _run_evaluator(url, brief=brief)
+                    total_attempts += int(workflow_out.get("attempts", 1))
+
                 record_design(
                     client_id=client_id,
                     logo_id=logo_id,
@@ -125,7 +159,7 @@ def handle_generate(req: GenerateRequest) -> GenerateResponse:
                     provider=workflow_out["provider"],
                     evaluator=ev_data or None,
                     source="ai_generated",
-                    attempts=int(workflow_out.get("attempts", 1)),
+                    attempts=total_attempts,
                     run_id=run_id,
                 )
 
