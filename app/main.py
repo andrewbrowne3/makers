@@ -7,11 +7,14 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from app.config import CFG, PROJECT_ROOT
 from app.db import (
     connect,
     get_client_by_name,
+    get_design_by_id,
+    get_logo_by_id,
     get_run,
     list_clients,
     list_designs,
@@ -91,6 +94,88 @@ def generate(req: GenerateRequest) -> GenerateResponse:
 def rebuild_router() -> dict:
     n = get_router().rebuild()
     return {"status": "ok", "seeded": n}
+
+
+# ── Phase 0: throwaway edit preview ────────────────────────────────────
+class EditPreviewRequest(BaseModel):
+    edit_instruction: str
+
+
+class EditPreviewResponse(BaseModel):
+    parent_design_id: int
+    parent_url: str | None
+    test_url: str | None
+    edit_instruction: str
+    mockup_index: int | None
+    cost_usd: float
+    diagnostics: dict
+    error: str | None = None
+
+
+@app.post("/designs/{design_id}/test-edit", response_model=EditPreviewResponse)
+def test_edit(design_id: int, body: EditPreviewRequest) -> EditPreviewResponse:
+    from app.workflows.image_gen import test_edit_preview
+    import httpx as _httpx
+
+    d = get_design_by_id(design_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="design not found")
+    if d.get("source") != "ai_generated" or not d.get("s3_key"):
+        raise HTTPException(status_code=400, detail="parent must be an AI-generated design with an S3 key")
+    mockup_index = d.get("mockup_index")
+    if mockup_index is None:
+        raise HTTPException(status_code=400, detail="parent design has no mockup_index")
+
+    s3 = get_s3()
+    parent_url = s3.presigned_download(d["s3_key"])
+
+    try:
+        with _httpx.Client(timeout=30, follow_redirects=True) as client:
+            parent_png = client.get(parent_url).content
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"failed to fetch parent PNG: {e}")
+
+    logo_id = d.get("logo_id")
+    logo_row = get_logo_by_id(logo_id) if logo_id else None
+    logo_bytes = b""
+    if logo_row and logo_row.get("storage_path"):
+        try:
+            logo_bytes = Path(logo_row["storage_path"]).read_bytes()
+        except Exception as e:  # noqa: BLE001
+            log.warning("logo file missing on disk for design %d: %s", design_id, e)
+    if not logo_bytes:
+        raise HTTPException(status_code=400, detail="parent design has no usable logo on disk")
+
+    try:
+        out = test_edit_preview(
+            parent_png_bytes=parent_png,
+            logo_bytes=logo_bytes,
+            mockup_index=mockup_index,
+            edit_instruction=body.edit_instruction,
+            client_name=f"design{design_id}",
+        )
+    except Exception as e:  # noqa: BLE001
+        log.exception("test_edit failed for design %d: %s", design_id, e)
+        return EditPreviewResponse(
+            parent_design_id=design_id,
+            parent_url=parent_url,
+            test_url=None,
+            edit_instruction=body.edit_instruction,
+            mockup_index=mockup_index,
+            cost_usd=0.0,
+            diagnostics={},
+            error=str(e),
+        )
+
+    return EditPreviewResponse(
+        parent_design_id=design_id,
+        parent_url=parent_url,
+        test_url=out["image_url"],
+        edit_instruction=body.edit_instruction,
+        mockup_index=mockup_index,
+        cost_usd=0.039,
+        diagnostics=out["diagnostics"],
+    )
 
 
 # ── Runs ───────────────────────────────────────────────────────────────

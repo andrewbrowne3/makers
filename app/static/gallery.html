@@ -29,6 +29,24 @@
   .hero-icon { margin-left: .25rem; }
   .direction-pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: .72rem; background: #8882; color: #888; margin-right: .3rem; }
   .card.hero { outline: 2px solid #28a745; outline-offset: 2px; }
+  .try-edit-btn { position: absolute; top: .4rem; right: .4rem; padding: 2px 7px; font-size: .72rem; background: #ff9500dd; color: #fff; border: 0; border-radius: 4px; cursor: pointer; font-weight: 600; opacity: 0; transition: opacity .15s; }
+  .card { position: relative; }
+  .card:hover .try-edit-btn { opacity: 1; }
+  .edit-modal { position: fixed; inset: 0; background: #000d; display: none; align-items: center; justify-content: center; padding: 2rem; z-index: 200; }
+  .edit-modal.open { display: flex; }
+  .edit-modal-inner { background: #1a1a1a; color: #fff; border-radius: 10px; padding: 1.5rem; max-width: 1200px; width: 100%; max-height: 95vh; overflow: auto; }
+  .edit-modal h3 { margin: 0 0 .75rem; }
+  .edit-modal textarea { width: 100%; padding: .6rem; border-radius: 6px; border: 1px solid #666; background: #222; color: #fff; font-family: inherit; font-size: 1rem; box-sizing: border-box; }
+  .edit-modal .btn-row { display: flex; gap: .5rem; margin-top: .75rem; }
+  .edit-modal button.primary { padding: .5rem 1rem; background: #0a84ff; color: #fff; border: 0; border-radius: 6px; font-weight: 600; cursor: pointer; }
+  .edit-modal button.ghost { padding: .5rem 1rem; background: transparent; color: #aaa; border: 1px solid #666; border-radius: 6px; cursor: pointer; }
+  .edit-modal button[disabled] { opacity: .5; cursor: progress; }
+  .edit-modal .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; }
+  .edit-modal .compare .pane { border: 1px solid #333; border-radius: 6px; padding: .5rem; }
+  .edit-modal .compare .pane h4 { margin: 0 0 .4rem; font-size: .85rem; color: #aaa; font-weight: 600; }
+  .edit-modal .compare .pane img { width: 100%; border-radius: 4px; background: #fff; }
+  .edit-modal .status { font-size: .85rem; color: #aaa; margin-top: .5rem; }
+  .edit-modal .diag { font-size: .75rem; color: #888; margin-top: .5rem; padding: .5rem; background: #0004; border-radius: 4px; white-space: pre-wrap; }
   .filters { display: flex; gap: .4rem; flex-wrap: wrap; margin: .5rem 0 1rem; }
   .filters label { font-weight: 400; font-size: .8rem; cursor: pointer; padding: .2rem .5rem; border: 1px solid #6663; border-radius: 999px; display: flex; align-items: center; gap: .3rem; }
   .filters input { margin: 0; }
@@ -63,6 +81,24 @@
 <div id="body"><p class="status">loading…</p></div>
 
 <div class="modal" id="modal"><button class="close" onclick="closeModal()">×</button><img id="modalImg" alt=""></div>
+
+<div class="edit-modal" id="editModal">
+  <div class="edit-modal-inner">
+    <h3>🧪 Try Edit  <span style="font-weight:400;font-size:.8rem;color:#aaa;">— Phase 0 preview (not saved)</span></h3>
+    <p style="color:#aaa;font-size:.85rem;margin:.25rem 0 .75rem;">Tell NB Pro what to change. It'll keep the original as reference and try to preserve everything except your instruction. $0.04 per test.</p>
+    <textarea id="editInstruction" rows="2" placeholder="e.g. make the dots larger and gold colored"></textarea>
+    <div class="btn-row">
+      <button class="primary" id="editSubmit">Run preview</button>
+      <button class="ghost" onclick="closeEditModal()">Close</button>
+    </div>
+    <div class="status" id="editStatus"></div>
+    <div class="compare" id="editCompare" style="display:none;">
+      <div class="pane"><h4>Parent (design #<span id="editParentId"></span>)</h4><img id="editParentImg" alt=""></div>
+      <div class="pane"><h4>Edit preview</h4><img id="editResultImg" alt=""></div>
+    </div>
+    <div class="diag" id="editDiag" style="display:none;"></div>
+  </div>
+</div>
 
 <script>
 function scoreClass(s) {
@@ -176,7 +212,9 @@ async function showClient(name, linkEl) {
       const retryIcon = d.attempts > 1 ? ' <span class="retry-icon" title="retried">🔁</span>' : '';
       const heroIcon = d.is_hero ? ' <span class="hero-icon" title="hero variant">🏆</span>' : '';
       const dirPill = d.direction_label ? `<span class="direction-pill">${d.direction_label}</span>` : '';
+      const editBtn = src ? `<button class="try-edit-btn" onclick="openEditModal(${d.id},'${src}')" title="Try Edit ($0.04)">🧪 edit</button>` : '';
       html += `<div class="card${d.is_hero ? ' hero' : ''}">
+        ${editBtn}
         ${src ? `<img src="${src}" onclick="openModal('${src}')" alt="mockup">` : '<div style="aspect-ratio:1;background:#dc354522;color:#dc3545;display:flex;align-items:center;justify-content:center;border-radius:4px;">no image</div>'}
         <div class="meta">
           <span>${dirPill}mock#${d.mockup_index ?? '?'} v${d.version}${retryIcon}${heroIcon}</span>
@@ -317,9 +355,85 @@ document.getElementById('view-runs').onclick = () => {
   loadRuns();
 };
 
+// ─── Try Edit (Phase 0 preview) ─────────────────────────────────────────
+let currentEditParentId = null;
+let currentEditParentUrl = null;
+
+function openEditModal(designId, parentUrl) {
+  currentEditParentId = designId;
+  currentEditParentUrl = parentUrl;
+  document.getElementById('editParentId').textContent = designId;
+  document.getElementById('editParentImg').src = parentUrl;
+  document.getElementById('editInstruction').value = '';
+  document.getElementById('editStatus').textContent = '';
+  document.getElementById('editCompare').style.display = 'none';
+  document.getElementById('editDiag').style.display = 'none';
+  document.getElementById('editResultImg').src = '';
+  document.getElementById('editSubmit').disabled = false;
+  document.getElementById('editModal').classList.add('open');
+}
+
+function closeEditModal() {
+  document.getElementById('editModal').classList.remove('open');
+}
+
+document.getElementById('editSubmit').onclick = async () => {
+  const instruction = document.getElementById('editInstruction').value.trim();
+  if (!instruction) { document.getElementById('editStatus').textContent = 'Enter an edit instruction.'; return; }
+  const btn = document.getElementById('editSubmit');
+  const status = document.getElementById('editStatus');
+  btn.disabled = true;
+  status.textContent = 'Rendering (≈20s)…';
+  document.getElementById('editCompare').style.display = 'grid';
+  document.getElementById('editResultImg').src = '';
+  const t0 = Date.now();
+  try {
+    const r = await fetch(`/designs/${currentEditParentId}/test-edit`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ edit_instruction: instruction }),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`HTTP ${r.status}: ${detail.slice(0, 200)}`);
+    }
+    const data = await r.json();
+    const t = ((Date.now() - t0) / 1000).toFixed(1);
+    if (data.error) {
+      status.textContent = `Error after ${t}s: ${data.error}`;
+    } else {
+      document.getElementById('editResultImg').src = data.test_url;
+      status.textContent = `Done in ${t}s · cost $${data.cost_usd.toFixed(3)} · result not saved to gallery`;
+      const diag = data.diagnostics || {};
+      const toeOk = diag.toe_mismatch === false ? '✓' : diag.toe_mismatch === true ? '✗' : '—';
+      const aspectDrift = diag.aspect_drift != null ? (diag.aspect_drift * 100).toFixed(0) + '%' : '—';
+      const fillDrift = diag.fill_drift != null ? (diag.fill_drift * 100).toFixed(0) + '%' : '—';
+      document.getElementById('editDiag').style.display = 'block';
+      document.getElementById('editDiag').textContent =
+        `toe match: ${toeOk} (src=${diag.src_toe_side}, out=${diag.out_toe_side})\n` +
+        `aspect drift: ${aspectDrift}  (threshold 30%)\n` +
+        `fill drift: ${fillDrift}  (threshold 35%)\n` +
+        `final_failure: ${diag.final_failure || '—'}`;
+    }
+  } catch (e) {
+    status.textContent = `Error: ${e.message || e}`;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+document.getElementById('editModal').addEventListener('click', (e) => {
+  if (e.target.id === 'editModal') closeEditModal();
+});
+
 loadClients();
 document.getElementById('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    closeModal();
+    closeEditModal();
+  }
+});
 </script>
 </body>
 </html>

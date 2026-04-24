@@ -332,6 +332,28 @@ def get_run(run_id: int) -> Optional[dict]:
         return dict(row) if row else None
 
 
+def get_design_by_id(design_id: int) -> Optional[dict]:
+    """Return a single design row (joined with its run) or None if missing."""
+    with connect() as con:
+        row = con.execute(
+            """
+            SELECT d.*, r.kind AS run_kind, r.label AS run_label
+              FROM designs d
+              LEFT JOIN runs r ON r.id = d.run_id
+             WHERE d.id = ?
+            """,
+            (design_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_logo_by_id(logo_id: int) -> Optional[dict]:
+    """Return a single logo row or None."""
+    with connect() as con:
+        row = con.execute("SELECT * FROM logos WHERE id = ?", (logo_id,)).fetchone()
+        return dict(row) if row else None
+
+
 def list_templates_used_by_client(client_id: int) -> list[dict]:
     """Distinct mockup_index values that this client's AI renders used, with counts."""
     with connect() as con:

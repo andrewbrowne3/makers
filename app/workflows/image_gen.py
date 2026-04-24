@@ -234,3 +234,61 @@ def _generate_with_retry(
 
 def _slug(s: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in s).strip("_")
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Phase 0 — throwaway edit preview. No DB persistence, no retries, no
+# evaluator. Just runs NB Pro once with [logo, mockup, parent_render]
+# references + a preservation-worded prompt. Used to empirically test
+# whether NB Pro actually preserves an existing render when asked.
+# ───────────────────────────────────────────────────────────────────────
+
+EDIT_PRESERVATION_PREAMBLE = (
+    "\n\nReference image 3 is the previous render of this exact sock. Preserve "
+    "the sock shape, pose, logo placement, color palette, fabric texture, and "
+    "overall composition. Apply ONLY the specific change described below. Do "
+    "not re-imagine the design, do not move the logo, do not change the "
+    "underlying pattern beyond what the edit instruction asks.\n\n"
+    "EDIT INSTRUCTION: {edit_instruction}"
+)
+
+
+def test_edit_preview(
+    *,
+    parent_png_bytes: bytes,
+    logo_bytes: bytes,
+    mockup_index: int,
+    edit_instruction: str,
+    client_name: str = "preview",
+) -> dict:
+    """Render one throwaway edit preview. Returns bytes, S3 key, presigned URL,
+    and basic diagnostics. Does NOT persist to the designs table."""
+    log.info("🧪 test_edit_preview start mock=%d instruction=%r", mockup_index, edit_instruction[:80])
+
+    mock = get_mockup(mockup_index)
+    mock_bytes = crop_to_subject(mock.path.read_bytes())
+    source_profile = mockup_pose_profile(mockup_index)
+
+    prompt = (
+        _build_prompt(client_name, None, [])
+        + _pose_hint(source_profile)
+        + EDIT_PRESERVATION_PREAMBLE.format(edit_instruction=edit_instruction)
+    )
+
+    provider = get_image_gen()
+    png = provider.generate(prompt, reference_images=[logo_bytes, mock_bytes, parent_png_bytes])
+    png = maybe_force_white_bg(png)
+    diag = pose_diagnostics(png, source_profile=source_profile)
+
+    s3 = get_s3()
+    filename = f"{_slug(client_name)}_mock{mockup_index}_testedit.png"
+    key = s3.upload_bytes(png, filename=filename, subpath="test-edits")
+    url = s3.presigned_download(key)
+    log.info("🧪 test_edit_preview done key=%s", key)
+    return {
+        "image_url": url,
+        "s3_key": key,
+        "prompt": prompt,
+        "provider": f"{provider.name}:{provider.model}",
+        "diagnostics": diag,
+    }
